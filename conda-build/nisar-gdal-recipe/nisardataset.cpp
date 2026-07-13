@@ -583,7 +583,7 @@ struct NISARVisitorData
     std::vector<std::string> *pFoundPaths;  // Pointer to list in Open()
     hid_t
         hStartingGroupID;  // Pass group/file ID for opening datasets inside visitor
-    // Add other necessary data e.g., const char* pszRequiredPrefix;
+    std::string sBasePath; // Absolute path prefix for GDAL Subdatasets
 };
 
 // Callback for H5LiterateByName - reads scalar datasets in identification group
@@ -771,8 +771,8 @@ static herr_t NISAR_FindDatasetsVisitor(
 {
     // Mark obj_id as unused if not needed directly
     (void)obj_id;
-
     NISARVisitorData *data = static_cast<NISARVisitorData *>(op_data);
+
     // Validate the data pointer passed from the caller
     if (!data || !data->pFoundPaths)
     {
@@ -780,6 +780,8 @@ static herr_t NISAR_FindDatasetsVisitor(
                  "Visitor callback received invalid op_data.");
         return H5_ITER_ERROR;  // Stop iteration
     }
+
+    std::string full_path = data->sBasePath + name;
 
     // Log entry for every object visited
     CPLDebug("NISAR_VISITOR_DETAIL", "Visiting object: Path='%s', Type=%d",
@@ -793,22 +795,7 @@ static herr_t NISAR_FindDatasetsVisitor(
         return H5_ITER_CONT;  // Skip groups, named types, etc.
     }
 
-    // Filter 2: Check if path starts with science/LSAR/
-    // 'name' provided by H5Ovisit (when starting from root) is the full path *without* leading slash.
-    const char *lsarPrefix = "science/LSAR/";
-    const char *ssarPrefix = "science/SSAR/";
-
-    // Check if path starts with *either* prefix
-    if (strncmp(name, lsarPrefix, strlen(lsarPrefix)) != 0 &&
-        strncmp(name, ssarPrefix, strlen(ssarPrefix)) != 0)
-    {
-        CPLDebug("NISAR_VISITOR_DETAIL",
-                 "--> Skipping '%s' (Path does not start with %s or %s)", name,
-                 lsarPrefix, ssarPrefix);
-        return H5_ITER_CONT;  // Skip datasets outside the main science group
-    }
-
-    // Filter 3: Check Rank (>= 2 dimensions usually desired for rasters)
+    // Filter 2: Check Rank (>= 2 dimensions usually desired for rasters)
     // Try to get dataspace directly from the object ID provided by H5Ovisit
     hid_t dspace_id = -1;
     int rank = -1;
@@ -819,18 +806,14 @@ static herr_t NISAR_FindDatasetsVisitor(
     // The error might be elsewhere. Let's try H5Dopen2 again.
 
     hid_t dset_id = -1;
-    // Construct the full path with leading slash for H5Dopen2 from root
-    std::string full_path = "/";
-    full_path += name;
 
     // Use the hStartingGroupID from the visitor data, which should be the file handle
-    dset_id = H5Dopen2(data->hStartingGroupID, full_path.c_str(), H5P_DEFAULT);
+    dset_id = H5Dopen2(data->hStartingGroupID, name, H5P_DEFAULT);
     if (dset_id < 0)
     {
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Could not open dataset '%s' using H5Dopen2 during subdataset "
-                 "discovery.",
-                 full_path.c_str());
+                 "discovery.", name);
         return H5_ITER_CONT;  // Skip if cannot open
     }
 
@@ -839,7 +822,7 @@ static herr_t NISAR_FindDatasetsVisitor(
     {
         CPLDebug("NISAR_VISITOR_DETAIL",
                  "--> Skipping '%s' (Opened object is not H5I_DATASET)",
-                 full_path.c_str());
+                 name);
         H5Dclose(dset_id);
         return H5_ITER_CONT;
     }
@@ -2543,9 +2526,20 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
             NISARVisitorData visitor_data;
             std::vector<std::string> found_paths_vector;
             visitor_data.pFoundPaths = &found_paths_vector;
-            visitor_data.hStartingGroupID = poDS->hHDF5;
 
-            H5Ovisit(poDS->hHDF5, H5_INDEX_NAME, H5_ITER_NATIVE, NISAR_FindDatasetsVisitor, (void *)&visitor_data, H5O_INFO_BASIC);
+            // Anchor the search to the specific instrument group
+            std::string sScienceRoot = "/science/" + poDS->m_sInst;
+            hid_t hScienceGroup = H5Gopen2(poDS->hHDF5, sScienceRoot.c_str(), H5P_DEFAULT);
+
+            if (hScienceGroup >= 0) {
+                visitor_data.hStartingGroupID = hScienceGroup; // Use the anchored group handle
+                visitor_data.sBasePath = sScienceRoot + "/";             // Store the absolute prefix
+
+                H5Ovisit(hScienceGroup, H5_INDEX_NAME, H5_ITER_NATIVE, NISAR_FindDatasetsVisitor, (void *)&visitor_data, H5O_INFO_BASIC);
+
+                H5Gclose(hScienceGroup);
+
+            }
 
             if (!found_paths_vector.empty()) {
                 char **papszMetadataList = nullptr;
@@ -2744,7 +2738,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         poDS->SetBand(1, new NisarRasterBand(poDS, 1));
     }
 
-    poDS->SetDescription(poOpenInfo->pszFilename);
+    //poDS->SetDescription(poOpenInfo->pszFilename);
     if (pathToOpen) poDS->SetMetadataItem("HDF5_PATH", pathToOpen);
 
     if (poDS->hDataset >= 0) {

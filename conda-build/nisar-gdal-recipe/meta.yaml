@@ -9,7 +9,7 @@ source:
   path: .
 
 build:
-  number: 1
+  number: 3
   skip: true  # [win]  # Don't have a bld.bat for Windows
 
 requirements:
