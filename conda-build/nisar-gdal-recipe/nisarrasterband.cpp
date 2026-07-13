@@ -237,103 +237,6 @@ NisarRasterBand::NisarRasterBand( NisarDataset *poDSIn, int nBandIn ) :
             m_apoOverviews.push_back(std::make_unique<NisarOverviewBand>(this, factor));
         }
     }
-
-    // 2. Define Context Struct for the C-Callback
-    struct ChunkIterCtx {
-        std::vector<NisarChunkInfo>* paoChunks;
-        int nBlocksPerRow;
-        int nBlockXSize;
-        int nBlockYSize;
-        int rank;
-        int nBand;
-    };
-    
-    ChunkIterCtx ctx = { &m_aoAllChunks, nBlocksPerRow, nBlockXSize, nBlockYSize, rank, nBand };
-
-    // 3. Define the Stateless Lambda Callback
-    // Note: Because this lambda captures nothing "[]", it implicitly casts to a C function pointer!
-    H5D_chunk_iter_op_t chunk_cb = [](const hsize_t *offset, unsigned /*filter_mask*/, haddr_t addr, hsize_t size, void *op_data) -> int {
-        ChunkIterCtx* pCtx = static_cast<ChunkIterCtx*>(op_data);
-        
-        int nBlockX = 0;
-        int nBlockY = 0;
-        
-        // Translate HDF5 element offsets back to GDAL Block coordinates
-        if (pCtx->rank == 3) {
-            // If it's a 3D dataset, ensure we only process chunks belonging to THIS band (Z-index)
-            if (offset[0] != static_cast<hsize_t>(pCtx->nBand - 1)) return 0; // Skip to next chunk
-            nBlockY = static_cast<int>(offset[1] / pCtx->nBlockYSize);
-            nBlockX = static_cast<int>(offset[2] / pCtx->nBlockXSize);
-        } else if (pCtx->rank == 2) {
-            nBlockY = static_cast<int>(offset[0] / pCtx->nBlockYSize);
-            nBlockX = static_cast<int>(offset[1] / pCtx->nBlockXSize);
-        } else {
-            return -1; // Abort iteration on unexpected rank
-        }
-
-        // Calculate 1D index in our pre-allocated vector
-        int idx = nBlockY * pCtx->nBlocksPerRow + nBlockX;
-        
-        // Map the physical address and mark it as physically existing!
-        // We explicitly cast size() to int to prevent signed/unsigned compiler errors
-        if (idx >= 0 && idx < static_cast<int>(pCtx->paoChunks->size())) {
-            (*pCtx->paoChunks)[idx].nOffset = static_cast<vsi_l_offset>(addr);
-            (*pCtx->paoChunks)[idx].nLength = static_cast<size_t>(size);
-            (*pCtx->paoChunks)[idx].bIsMissing = false;
-        }
-        
-        return 0; // Return 0 to tell HDF5 to keep iterating
-    };
-
-    // 4. Fire the Optimized Iterator
-    // This blasts through the B-Tree in native C and populates our vector instantly.
-    H5Dchunk_iter(hDatasetID, H5P_DEFAULT, chunk_cb, &ctx);
-
-    // ====================================================================
-    // 5. GENERATE THE SIDECAR (With Remote Target Tracking & Fallbacks)
-    // ====================================================================
-    
-    // Track the target path dialect
-    std::string osS3Url = GetStandardDatasetURI();
-
-    // Safety Valve A: If the string is completely empty
-    if (osS3Url.empty())
-    {
-        CPLError(CE_Warning, CPLE_AppDefined, 
-                 "NISAR: GetStandardDatasetURI() resolved as empty! Applying structural local fallback.");
-        
-        // A standard local URI fallback ensures fsspec won't choke on an empty array element
-        osS3Url = "file:///tmp/mock_nisar_dataset.h5";
-    }
-    // Safety Valve B: If it's a local file path (e.g., "/home/user/data.h5" or "C:\data.h5")
-    else if (!STARTS_WITH_CI(osS3Url.c_str(), "s3://") && 
-             !STARTS_WITH_CI(osS3Url.c_str(), "http://") && 
-             !STARTS_WITH_CI(osS3Url.c_str(), "https://") &&
-             !STARTS_WITH_CI(osS3Url.c_str(), "file://"))
-    {
-        CPLDebug("NISAR_ZARR", "Local file path tracking detected: %s", osS3Url.c_str());
-        
-        // fsspec loves explicit protocols. If it's a local file, prepend the file:// schema
-        osS3Url = "file://" + osS3Url;
-    }
-
-    // Capture the runtime tracking states via GDAL console pipeline
-    CPLDebug("NISAR_ZARR", "Sidecar Target URI verified as: %s", osS3Url.c_str());
-
-    // Dynamically grab the HDF5 dataset path
-    char szDatasetName[1024];
-    ssize_t len = H5Iget_name(hDatasetID, szDatasetName, sizeof(szDatasetName));
-    std::string osZarrGroup = (len > 0) ? szDatasetName : "unknown_dataset";
-    
-    // Safely format the output JSON file name 
-    std::string osSafeName = osZarrGroup;
-    std::replace(osSafeName.begin(), osSafeName.end(), '/', '_');
-    std::string osOutJson = "/tmp/nisar_kerchunk" + osSafeName + ".json";
-
-    CPLDebug("NISAR", "Exporting Virtual Zarr Sidecar with %zu parsed chunk slots.", m_aoAllChunks.size());
-    
-    // Fire the finalized, flat reference compiler
-    WriteVirtualZarrSidecar(osS3Url, osZarrGroup, m_aoAllChunks, osOutJson);
 }
 
 NisarRasterBand::~NisarRasterBand()
@@ -350,6 +253,77 @@ NisarRasterBand::~NisarRasterBand()
     if (m_bMaskBandOwned && m_poMaskBand) {
         delete m_poMaskBand;
     }
+}
+
+void NisarRasterBand::MapChunks()
+{
+    std::lock_guard<std::mutex> lock(m_oChunkMapMutex);
+    if (m_bChunksMapped) return; // Double-checked locking
+
+    CPLDebug("NISAR_DRIVER", "Lazy-mapping HDF5 chunks for Band %d...", nBand);
+
+    NisarDataset *poGDS = static_cast<NisarDataset *>(this->poDS);
+
+    // Define Context Struct for the C-Callback
+    int nBlocksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
+    int rank = H5Sget_simple_extent_ndims(m_hFileSpaceID);
+
+    struct ChunkIterCtx {
+        std::vector<NisarChunkInfo>* paoChunks;
+        int nBlocksPerRow;
+        int nBlockXSize;
+        int nBlockYSize;
+        int rank;
+        int nBand;
+    };
+    
+    ChunkIterCtx ctx = { &m_aoAllChunks, nBlocksPerRow, nBlockXSize, nBlockYSize, rank, nBand };
+
+    // Define the Stateless Lambda Callback
+    H5D_chunk_iter_op_t chunk_cb = [](const hsize_t *offset, unsigned /*filter_mask*/, haddr_t addr, hsize_t size, void *op_data) -> int {
+        ChunkIterCtx* pCtx = static_cast<ChunkIterCtx*>(op_data);
+        
+        int nBlockX = 0, nBlockY = 0;
+        if (pCtx->rank == 3) {
+            if (offset[0] != static_cast<hsize_t>(pCtx->nBand - 1)) return 0;
+            nBlockY = static_cast<int>(offset[1] / pCtx->nBlockYSize);
+            nBlockX = static_cast<int>(offset[2] / pCtx->nBlockXSize);
+        } else if (pCtx->rank == 2) {
+            nBlockY = static_cast<int>(offset[0] / pCtx->nBlockYSize);
+            nBlockX = static_cast<int>(offset[1] / pCtx->nBlockXSize);
+        } else {
+            return -1; 
+        }
+
+        int idx = nBlockY * pCtx->nBlocksPerRow + nBlockX;
+        if (idx >= 0 && idx < static_cast<int>(pCtx->paoChunks->size())) {
+            (*pCtx->paoChunks)[idx].nOffset = static_cast<vsi_l_offset>(addr);
+            (*pCtx->paoChunks)[idx].nLength = static_cast<size_t>(size);
+            (*pCtx->paoChunks)[idx].bIsMissing = false;
+        }
+        return 0; 
+    };
+
+    // Fire the Iterator
+    H5Dchunk_iter(poGDS->GetDatasetHandle(), H5P_DEFAULT, chunk_cb, &ctx);
+
+    // Opt-in Kerchunk Sidecar Generation
+    if (CPLTestBool(CPLGetConfigOption("NISAR_EXPORT_ZARR", "NO"))) {
+        std::string osS3Url = GetStandardDatasetURI();
+        if (osS3Url.empty()) osS3Url = "file:///tmp/mock_nisar_dataset.h5";
+        
+        char szDatasetName[1024];
+        ssize_t len = H5Iget_name(poGDS->GetDatasetHandle(), szDatasetName, sizeof(szDatasetName));
+        std::string osZarrGroup = (len > 0) ? szDatasetName : "unknown_dataset";
+        
+        std::string osSafeName = osZarrGroup;
+        std::replace(osSafeName.begin(), osSafeName.end(), '/', '_');
+        std::string osOutJson = "/tmp/nisar_kerchunk" + osSafeName + ".json";
+        
+        WriteVirtualZarrSidecar(osS3Url, osZarrGroup, m_aoAllChunks, osOutJson);
+    }
+
+    m_bChunksMapped = true;
 }
 
 std::string NisarRasterBand::GetRawVSIPath() const
@@ -787,6 +761,11 @@ GDALRasterBand* NisarRasterBand::GetMaskBand()
 /***************************************************************************/
 CPLErr NisarRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, void *pImage)
 {
+    // Ensure chunks are mapped before we calculate fetches!
+    if (!m_bChunksMapped) {
+        MapChunks();
+    }
+
     // We lock to ensure the network arrays build cleanly, but we will 
     // manually drop this lock before we touch the GDAL Block Cache.
     std::unique_lock<std::mutex> oLock(m_oMegaFetchMutex);

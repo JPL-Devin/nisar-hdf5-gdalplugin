@@ -45,6 +45,9 @@ class NisarRasterBand final : public GDALPamRasterBand
     friend class NisarDataset;
 
     private:
+      bool m_bChunksMapped = false;
+      std::mutex m_oChunkMapMutex;
+      void MapChunks();
       std::mutex m_oMutex; // Protects shared VSI file pointers
       std::mutex m_oMegaFetchMutex;
       VSILFILE* m_fp = nullptr; // shared file pointer opened in the Dataset

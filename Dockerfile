@@ -64,14 +64,9 @@ RUN conda config --system --remove channels defaults && \
 RUN conda install --name base --yes --override-channels -c conda-forge \
     conda-build \
     boa \
-    libstdcxx-ng \
-    gdal \
-    hdf5 \
-    proj \
-    proj-data && \
-    conda clean --all --force --yes
+    conda-libmamba-solver && \
+    conda clean --all --force-pkgs-dirs --yes
 
 WORKDIR /build_space
-COPY . .
 
 CMD ["/bin/bash"]
