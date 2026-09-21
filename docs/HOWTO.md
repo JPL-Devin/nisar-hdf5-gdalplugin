@@ -467,8 +467,9 @@ Open options are passed as `-oo KEY=VALUE` and may be repeated; every GDAL utili
 | `METADATA` | `ALL` or a comma list of `ATTITUDE`, `CALIBRATIONINFORMATION`, `CEOSANALYSISREADYDATA`, `ORBIT`, `PROCESSINGINFORMATION`, `RADARGRID`, `SOURCEDATA` | none | Loads the named `/metadata/<group>` trees into `NISAR_<GROUP>` metadata domains. Pair with `gdalinfo -mdd`. |
 | `MASK` | `YES`, `NO` | `NO` | Expose the product validity mask as the GDAL mask band. See section 9. |
 | `DEM_FILE` | path, `/vsis3/...` or `/vsicurl/...` URL | none | DEM for 3-D metadata cube interpolation. Required when `QUANTITY` is set; has no effect otherwise. |
-| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling used when warping the DEM onto the target grid. |
-| `QUANTITY` | cube name, e.g. `incidenceAngle` | none | Its presence routes the open to the cube-interpolation dataset (section 7.6). With a bare `NISAR:"file.h5"` the cube is resolved to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>`; an explicit HDF5 path in the connection string overrides it. The reference grid follows `INST`/`FREQ`/`POL`. |
+| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling used when warping the DEM onto a geocoded (L2/L3) target grid. Not used on Level 1, where the DEM is sampled bilinearly at each solved ground point. |
+| `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 only: height assumed where the DEM is nodata or has no coverage (e.g. ocean). |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | none | Its presence routes the open to the cube-interpolation dataset (section 7.6). With a bare `NISAR:"file.h5"` the cube is resolved to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) or `.../metadata/geolocationGrid/<QUANTITY>` (L1); an explicit HDF5 path in the connection string overrides it. The reference grid follows `INST`/`FREQ`/`POL`. |
 | `ENABLE_PAGE_BUFFERING` | `YES`, `NO` | `NO` | Reserved. The driver always uses a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 There are **no `LAYER` or `MEASURE` options**. Earlier drafts of this guide described them; they do not exist in the driver. GUNW, GOFF, RIFG and RUNW layers are addressed by full HDF5 path (section 7.4).
@@ -512,7 +513,7 @@ gdalinfo -oo FREQ=A -oo POL=HH NISAR:"$GSLC"
 
 Because the pixels are complex, the derived subdatasets described in section 10 are particularly useful here: they let you get amplitude, phase or intensity without writing any code.
 
-One current limitation: metadata cube interpolation (section 7.6) supports the geocoded GCOV, GSLC and GUNW reference grids only. On a Level 1 granule (RSLC, RIFG, RUNW) it fails with "Level-1 product ... is not supported yet (radar coordinates)"; it is a driver gap rather than a mistake on your part.
+Metadata cube interpolation (section 7.6) works on RSLC in radar coordinates: the output has the swath's pixel/line grid, carries the swath GCPs, and the terrain height at each pixel is solved through the geolocation grid's `coordinateX`/`coordinateY` cubes and the DEM. RIFG and RUNW are not yet routed (their rasters sit one group deeper than `frequency<F>/<POL>`) and fail with "Level-1 product ... is not supported yet (only RSLC swaths)".
 
 ## 7.3 GCOV (Level 2)
 
@@ -622,10 +623,24 @@ What happens, from the source (v0.7.0):
 
 1. The presence of `QUANTITY` routes the open to the interpolation dataset. If `DEM_FILE` is missing the open fails with "DEM_FILE open option is REQUIRED when QUANTITY is specified."
 2. The **cube** is the dataset the connection string points at. If the connection string is a bare `NISAR:"file.h5"`, the driver reads the product identification and resolves the cube to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>`; a missing quantity fails with "Failed to open valid 3D coarse metadata cube at ...".
-3. The **target grid** is chosen from the product type recorded in the granule (not from the file name), honouring `INST`, `FREQ` and `POL`: GCOV and GSLC use `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `POL` is `HHHH` for GCOV and `HH` for GSLC); GUNW uses `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`). Level 1 products fail with "Level-1 product ... is not supported yet (radar coordinates)".
-4. The DEM is exposed as a lazily-warped view on the target grid using `DEM_RESAMPLING` (blocks are resampled on demand, so a full-resolution GSLC grid does not pin a grid-sized DEM in memory); the whole cube is loaded into memory, and each output pixel is interpolated in height. The output is a single-band Float32 raster with the target grid's georeferencing, 512×512 blocks, and NaN where the cube has no value. Pixels outside the DEM's coverage take height 0.
+3. The **target grid** is chosen from the product type recorded in the granule (not from the file name), honouring `INST`, `FREQ` and `POL`: GCOV and GSLC use `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `POL` is `HHHH` for GCOV and `HH` for GSLC); GUNW uses `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`); RSLC uses `.../swaths/frequency<F>/<POL>` (default `HH`) and the cube is resolved under `metadata/geolocationGrid` instead of `metadata/radarGrid`.
+4. On a geocoded grid the DEM is exposed as a lazily-warped view on the target grid using `DEM_RESAMPLING` (blocks are resampled on demand, so a full-resolution GSLC grid does not pin a grid-sized DEM in memory); the whole cube is loaded into memory, and each output pixel is interpolated in height. The output is a single-band Float32 raster with the target grid's georeferencing, 512×512 blocks, and NaN where the cube has no value. Pixels outside the DEM's coverage take height 0.
+5. On RSLC the output is in **radar coordinates**: every pixel is a (slant range, zero-Doppler time) pair taken from the swath's `slantRange` and `zeroDopplerTime` vectors, and the cube is indexed by the geolocation grid's own `slantRange`/`zeroDopplerTime` axes. The terrain height is not known up front (the DEM is a map, the pixel is not), so the driver solves it per pixel by fixed-point iteration: start at `DEM_NODATA_HEIGHT`, interpolate `coordinateX`/`coordinateY` at that height to get the ground point, read the DEM there (bilinear, in the geolocation grid's CRS; a warped view is used if the DEM CRS differs), repeat until the height changes by less than 0.1 m (at most 10 passes), then interpolate the requested cube at the converged height. DEM nodata or missing coverage takes `DEM_NODATA_HEIGHT` (default 0 m). The result carries the swath's GCPs and GCP CRS (`NISAR_GRID_TYPE=RADAR`, `NISAR_GEOLOCATION_EPSG`), so it warps to a map with `gdalwarp` exactly like the swath itself. Requesting `QUANTITY=coordinateX`/`coordinateY` gives the solved ground coordinates of every pixel (Float32, so ~1e-6° at mid-latitudes).
 
 The output carries `NISAR_PRODUCT_TYPE`, `NISAR_CUBE_PATH`, `NISAR_REFERENCE_GRID` and `NISAR_QUANTITY` metadata items recording what was resolved, so `gdalinfo` on the result (or on the interpolated open itself) shows which grid and cube were used.
+
+```
+# RSLC: incidence angle on the HH swath grid, terrain-corrected through the DEM
+gdal_translate -co TILED=YES -co COMPRESS=ZSTD \
+  -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" \
+  NISAR:"$RSLC" rslc_incidence_angle.tif
+
+# Ocean / DEM gaps assumed at 20 m instead of 0 m
+gdal_translate -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" -oo DEM_NODATA_HEIGHT=20 \
+  NISAR:"$RSLC" rslc_incidence_angle.tif
+```
+
+On a 26126 × 7600 RSLC swath the full-scene incidence-angle translate took 37 s with a ~1.2 GB peak footprint against the public HTTPS DEM (*observed*, this machine); a 512 × 512 block costs about 10 ms once the DEM tiles are cached, so the run is dominated by DEM fetches and GeoTIFF writing.
 
 A global public DEM VRT is available in both S3 and HTTPS form (*observed*); its resolution need not match NISAR posting, which is why `DEM_RESAMPLING` exists:
 
@@ -893,7 +908,9 @@ Read in chunk-aligned windows rather than calling `ReadAsArray()` on a whole rem
 | `The HDF5 dataset '...' does not exist` | The path (typed or constructed from `FREQ`/`POL`) is not in this granule. List the container and copy the path; for GUNW/GOFF/RIFG/RUNW use the full path, not open options. |
 | `Invalid INST open option`, `Invalid FREQ open option`, `Invalid POL open option: '...'` | Check `INST` (`LSAR`/`SSAR`), `FREQ` (`A`/`B`) and `POL` against the granule's `listOfPolarizations` / `listOfCovarianceTerms`. |
 | `DEM_FILE open option is REQUIRED when QUANTITY is specified` | Interpolation mode needs both `QUANTITY` and `DEM_FILE`. |
-| `Interpolation: Level-1 product RSLC is not supported yet (radar coordinates).` | Cube interpolation currently supports the geocoded GCOV, GSLC and GUNW grids only. |
+| `Interpolation: Level-1 product RIFG is not supported yet (only RSLC swaths).` | Cube interpolation supports GCOV, GSLC, GUNW and RSLC; RIFG/RUNW reference grids are not routed yet. |
+| `Interpolation: geolocationGrid axes/coordinate cubes do not match the ... cube` | The `coordinateX`/`coordinateY` cubes or `slantRange`/`zeroDopplerTime` vectors under `metadata/geolocationGrid` have a different shape than the requested cube; check the granule, or spell out the cube path. |
+| `NISAR Interpolation: DEM window ... is too large; use a coarser DEM.` | The ground footprint of one 512 × 512 radar block covers more than 64 Mpixel of DEM; the DEM is far finer than needed for a metadata cube. |
 | `Failed to open valid 3D coarse metadata cube at ...` | The `QUANTITY` (or explicit cube path) does not exist in the granule; list `.../metadata/radarGrid` for the available cubes. |
 | Pixel size near 1, origin near 0 | No GeoTransform was found for this dataset. For L1 that is expected (use the GCPs); for L2/L3 check the driver version and the path. |
 | Warped output is a tiny square in the wrong place | Same cause as above; you warped a raster with an identity GeoTransform. |
@@ -917,7 +934,7 @@ Because several releases changed output rather than only fixing crashes, knowing
 | 0.1.8 | Radar-grid metadata cubes interpreted as multi-band rasters with a correct GeoTransform; band selection with `-b`. | yes |
 | 0.1.9 | `DRIVER_VERSION` with build date reported via `gdalinfo --format NISAR`. | no |
 | 0.3.0 | Path quoting and slash handling reworked. Mask no longer applied by default. Remote reads through HDF5's ROS3 driver with AWS-style credential sourcing. | yes |
-| 0.7.0 (current) | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. Level 1 interpolation still rejected. | yes (GSLC interpolation) |
+| 0.7.0 (current) | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW, RSLC) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` (L2/L3) or `metadata/geolocationGrid` (L1) when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. RSLC interpolation in radar coordinates with per-pixel terrain height solved through `coordinateX`/`coordinateY` and the DEM (`DEM_NODATA_HEIGHT`), GCPs passed through. | yes (GSLC and RSLC interpolation) |
 | 0.6.6 | Built against GDAL 3.12. All remote I/O routed through GDAL VSI via a custom HDF5 Virtual File Layer (ROS3 no longer used; standard GDAL `AWS_*` configuration applies). Open options registered in `DMD_OPENOPTIONLIST`; `DEM_RESAMPLING` added; no `LAYER`/`MEASURE` options. Chunk-aligned mega-fetch reads with `NISAR_PREFETCH_GRID` / `NISAR_MAX_MEGAFETCH_BYTES`, virtual overviews, attribute-based statistics, GUNW-specific mask decoding, optional Kerchunk sidecar. | yes (statistics, masks) |
 
 # 15. Verification checklist
@@ -932,7 +949,7 @@ Before you use driver output for anything quantitative, work through this list. 
 - For NEB and other calibration-grid rasters, verify the GeoTransform specifically. Different corners from the principal grid are expected; a one-unit pixel size is not.
 - For phase, offsets and connected components, confirm your resampling is nearest neighbour and that NaN nodata is set on both sides of the warp.
 - Do not quote `gdalinfo -stats` / `-approx_stats` mean and standard deviation unless the dataset carries `mean_value` / `sample_stddev` attributes; they may be synthesised from min and max.
-- For metadata cubes, decide whether you want a single height band or a DEM-interpolated raster. They are not interchangeable, and interpolation is GCOV, GSLC and GUNW only (no Level 1 yet).
+- For metadata cubes, decide whether you want a single height band or a DEM-interpolated raster. They are not interchangeable; interpolation covers GCOV, GSLC, GUNW and RSLC (RSLC output stays in radar coordinates with GCPs).
 - For L1 frequency-B rasters, verify GCP geolocation independently.
 - For SME2, verify CRS and GeoTransform before overlaying; it is the least exercised product.
 

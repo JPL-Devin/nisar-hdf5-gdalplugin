@@ -19,6 +19,9 @@ public:
     ~NisarInterpolatedRasterBand() override = default;
 
     CPLErr IReadBlock(int nBlockXOff, int nBlockYOff, void* pImage) override;
+
+private:
+    CPLErr ReadRadarBlock(int nBlockXOff, int nBlockYOff, float* pafOutput);
 };
 
 #endif // NISAR_INTERPOLATED_RASTERBAND_H

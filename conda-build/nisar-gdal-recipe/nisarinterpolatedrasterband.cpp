@@ -29,6 +29,10 @@ CPLErr NisarInterpolatedRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, v
     NisarInterpolatedDataset* poGDS = static_cast<NisarInterpolatedDataset*>(poDS);
     float* pafOutput = static_cast<float*>(pImage);
 
+    if (poGDS->m_bRadarGrid) {
+        return ReadRadarBlock(nBlockXOff, nBlockYOff, pafOutput);
+    }
+
     int nXOff = nBlockXOff * nBlockXSize;
     int nYOff = nBlockYOff * nBlockYSize;
     int nReqXSize = std::min(nBlockXSize, nRasterXSize - nXOff);
@@ -194,5 +198,162 @@ CPLErr NisarInterpolatedRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, v
              "Interpolation Block(X:%d, Y:%d) | Size: %dx%d | Time: %.3f ms",
              nBlockXOff, nBlockYOff, nReqXSize, nReqYSize, t_diff.count());
 
+    return CE_None;
+}
+
+// DEM window (in cube CRS) covering a block's ground footprint, cached in RAM.
+namespace {
+struct DEMWindow
+{
+    int nX0 = 0, nY0 = 0, nXSize = 0, nYSize = 0;
+    std::vector<float> data;
+};
+}  // namespace
+
+// Level-1: each output pixel is (slantRange, zeroDopplerTime); the terrain height is
+// solved by fixed-point iteration h -> DEM(coordinateX(h), coordinateY(h)).
+CPLErr NisarInterpolatedRasterBand::ReadRadarBlock(int nBlockXOff, int nBlockYOff, float* pafOutput)
+{
+    auto t_start = std::chrono::high_resolution_clock::now();
+    NisarInterpolatedDataset* poGDS = static_cast<NisarInterpolatedDataset*>(poDS);
+
+    const int nXOff = nBlockXOff * nBlockXSize;
+    const int nYOff = nBlockYOff * nBlockYSize;
+    const int nReqXSize = std::min(nBlockXSize, nRasterXSize - nXOff);
+    const int nReqYSize = std::min(nBlockYSize, nRasterYSize - nYOff);
+    std::fill_n(pafOutput, nBlockXSize * nBlockYSize, std::numeric_limits<float>::quiet_NaN());
+
+    // 1. Cube node coordinates of every column (range) and line (azimuth time) in the block.
+    std::vector<double> adfNodeX(nReqXSize), adfNodeY(nReqYSize);
+    for (int x = 0; x < nReqXSize; ++x)
+        adfNodeX[x] = NisarInterpolatedDataset::AxisToNode(poGDS->m_cubeRange, poGDS->m_swathRange[nXOff + x]);
+    for (int y = 0; y < nReqYSize; ++y)
+        adfNodeY[y] = NisarInterpolatedDataset::AxisToNode(poGDS->m_cubeTime, poGDS->m_swathTime[nYOff + y]);
+
+    const int nCubeX = poGDS->m_nCubeXSize, nCubeY = poGDS->m_nCubeYSize;
+    const int nx0 = std::max(0, static_cast<int>(std::floor(*std::min_element(adfNodeX.begin(), adfNodeX.end()))));
+    const int nx1 = std::min(nCubeX - 1, static_cast<int>(std::ceil(*std::max_element(adfNodeX.begin(), adfNodeX.end()))));
+    const int ny0 = std::max(0, static_cast<int>(std::floor(*std::min_element(adfNodeY.begin(), adfNodeY.end()))));
+    const int ny1 = std::min(nCubeY - 1, static_cast<int>(std::ceil(*std::max_element(adfNodeY.begin(), adfNodeY.end()))));
+
+    // Ground bbox of the block's cube nodes over the height range [hlo, hhi].
+    auto groundBBox = [&](double hlo, double hhi, double& minX, double& maxX, double& minY, double& maxY) {
+        int zlo, zhi, zdummy;
+        double wdummy;
+        poGDS->CubeZ(hlo, zlo, zdummy, wdummy);
+        poGDS->CubeZ(hhi, zdummy, zhi, wdummy);
+        minX = minY = std::numeric_limits<double>::max();
+        maxX = maxY = -std::numeric_limits<double>::max();
+        const size_t nPlane = static_cast<size_t>(nCubeX) * nCubeY;
+        for (int z = zlo; z <= zhi; ++z)
+            for (int y = ny0; y <= ny1; ++y)
+                for (int x = nx0; x <= nx1; ++x) {
+                    const size_t i = z * nPlane + static_cast<size_t>(y) * nCubeX + x;
+                    minX = std::min(minX, poGDS->m_coordX[i]); maxX = std::max(maxX, poGDS->m_coordX[i]);
+                    minY = std::min(minY, poGDS->m_coordY[i]); maxY = std::max(maxY, poGDS->m_coordY[i]);
+                }
+    };
+
+    // 2. Read the DEM window; widen the assumed height range until it contains the DEM values seen.
+    const double* inv = poGDS->m_adfDEMInvGeoTransform;
+    const int nDEMX = poGDS->m_poAlignedDEM->GetRasterXSize();
+    const int nDEMY = poGDS->m_poAlignedDEM->GetRasterYSize();
+    const double dfNoDataHeight = poGDS->m_dfNoDataHeight;
+    auto isNoData = [&](float v) {
+        return std::isnan(v) || (poGDS->m_bDEMHasNoData && v == static_cast<float>(poGDS->m_dfDEMNoData));
+    };
+    DEMWindow win;
+    double hlo = dfNoDataHeight, hhi = dfNoDataHeight;
+    for (int nPass = 0; nPass < 3; ++nPass) {
+        double minX, maxX, minY, maxY;
+        groundBBox(hlo, hhi, minX, maxX, minY, maxY);
+        double px0 = std::numeric_limits<double>::max(), py0 = px0, px1 = -px0, py1 = -px0;
+        for (double X : { minX, maxX })
+            for (double Y : { minY, maxY }) {
+                const double px = inv[0] + X * inv[1] + Y * inv[2];
+                const double py = inv[3] + X * inv[4] + Y * inv[5];
+                px0 = std::min(px0, px); px1 = std::max(px1, px);
+                py0 = std::min(py0, py); py1 = std::max(py1, py);
+            }
+        win.nX0 = std::max(0, static_cast<int>(std::floor(px0)) - 2);
+        win.nY0 = std::max(0, static_cast<int>(std::floor(py0)) - 2);
+        const int nXEnd = std::min(nDEMX, static_cast<int>(std::ceil(px1)) + 2);
+        const int nYEnd = std::min(nDEMY, static_cast<int>(std::ceil(py1)) + 2);
+        win.nXSize = std::max(0, nXEnd - win.nX0);
+        win.nYSize = std::max(0, nYEnd - win.nY0);
+        if (win.nXSize == 0 || win.nYSize == 0) break;  // block entirely off the DEM
+        if (static_cast<size_t>(win.nXSize) * win.nYSize > (static_cast<size_t>(1) << 26)) {
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "NISAR Interpolation: DEM window %dx%d for block (%d,%d) is too large; "
+                     "use a coarser DEM.", win.nXSize, win.nYSize, nBlockXOff, nBlockYOff);
+            return CE_Failure;
+        }
+        win.data.assign(static_cast<size_t>(win.nXSize) * win.nYSize, 0.0f);
+        if (poGDS->m_poAlignedDEM->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
+                                            win.data.data(), win.nXSize, win.nYSize, GDT_Float32,
+                                            1, nullptr, 0, 0, 0, nullptr) != CE_None) {
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "NISAR Interpolation: Failed to read DEM window for block (%d,%d).",
+                     nBlockXOff, nBlockYOff);
+            return CE_Failure;
+        }
+        double dfMin = dfNoDataHeight, dfMax = dfNoDataHeight;
+        for (float v : win.data) {
+            if (isNoData(v)) continue;
+            dfMin = std::min(dfMin, static_cast<double>(v));
+            dfMax = std::max(dfMax, static_cast<double>(v));
+        }
+        if (dfMin >= hlo && dfMax <= hhi) break;
+        hlo = std::min(hlo, dfMin);
+        hhi = std::max(hhi, dfMax);
+    }
+
+    // Bilinear DEM sample; outside the window or on nodata returns DEM_NODATA_HEIGHT.
+    auto sampleDEM = [&](double X, double Y) -> double {
+        if (win.data.empty()) return dfNoDataHeight;
+        const double u = inv[0] + X * inv[1] + Y * inv[2] - 0.5 - win.nX0;
+        const double v = inv[3] + X * inv[4] + Y * inv[5] - 0.5 - win.nY0;
+        if (!(u >= 0.0 && v >= 0.0 && u <= win.nXSize - 1 && v <= win.nYSize - 1)) return dfNoDataHeight;
+        const int i0 = static_cast<int>(u), j0 = static_cast<int>(v);
+        const int i1 = std::min(i0 + 1, win.nXSize - 1), j1 = std::min(j0 + 1, win.nYSize - 1);
+        const float a = win.data[static_cast<size_t>(j0) * win.nXSize + i0];
+        const float b = win.data[static_cast<size_t>(j0) * win.nXSize + i1];
+        const float c = win.data[static_cast<size_t>(j1) * win.nXSize + i0];
+        const float d = win.data[static_cast<size_t>(j1) * win.nXSize + i1];
+        if (isNoData(a) || isNoData(b) || isNoData(c) || isNoData(d)) return dfNoDataHeight;
+        const double fu = u - i0, fv = v - j0;
+        return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv;
+    };
+
+    // 3. Per pixel: solve h = DEM(X(h), Y(h)), then interpolate the quantity at (h, t, r).
+    const int nMaxIter = poGDS->m_nMaxIter;
+    const double dfTol = poGDS->m_dfHeightTol;
+    double hSeed = dfNoDataHeight;
+    for (int y = 0; y < nReqYSize; ++y) {
+        for (int x = 0; x < nReqXSize; ++x) {
+            const NisarCubeXY xy = poGDS->CubeXY(adfNodeX[x], adfNodeY[y]);
+            int z0, z1;
+            double wz;
+            double h = hSeed;
+            for (int it = 0; it < nMaxIter; ++it) {
+                poGDS->CubeZ(h, z0, z1, wz);
+                const double X = poGDS->Trilinear(poGDS->m_coordX, xy, z0, z1, wz);
+                const double Y = poGDS->Trilinear(poGDS->m_coordY, xy, z0, z1, wz);
+                const double hNew = sampleDEM(X, Y);
+                const bool bDone = std::fabs(hNew - h) < dfTol;
+                h = hNew;
+                if (bDone) break;
+            }
+            hSeed = h;
+            poGDS->CubeZ(h, z0, z1, wz);
+            pafOutput[y * nBlockXSize + x] =
+                static_cast<float>(poGDS->Trilinear(poGDS->m_cubeData, xy, z0, z1, wz));
+        }
+    }
+
+    std::chrono::duration<double, std::milli> t_diff = std::chrono::high_resolution_clock::now() - t_start;
+    CPLDebug("NISAR_INTERP_PERF",
+             "Radar Block(X:%d, Y:%d) | Size: %dx%d | DEM window %dx%d | Time: %.3f ms",
+             nBlockXOff, nBlockYOff, nReqXSize, nReqYSize, win.nXSize, win.nYSize, t_diff.count());
     return CE_None;
 }

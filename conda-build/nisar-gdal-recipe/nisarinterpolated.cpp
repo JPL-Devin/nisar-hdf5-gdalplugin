@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <algorithm>
 #include <limits>
 
@@ -8,6 +9,7 @@
 #include "nisardataset.h"
 #include "gdalwarper.h"
 #include "vrtdataset.h"
+#include "cpl_time.h"
 
 // Split "NISAR:<file>[:<hdf5-path>]" into its parts (same rules as NisarDataset::Open):
 // the last colon separates file and path unless it is followed by "//" (URL scheme).
@@ -51,6 +53,85 @@ static NisarDataset* NisarOpenInternal(const std::string& sConn, char** papszOpt
     return poNisar;
 }
 
+// Read a whole numeric HDF5 dataset (scalar, 1D or 3D) as doubles.
+static bool NisarReadDoubles(hid_t hFile, const std::string& sPath,
+                             std::vector<double>& vec, std::vector<hsize_t>* pDims = nullptr)
+{
+    hid_t hDset = H5Dopen2(hFile, sPath.c_str(), H5P_DEFAULT);
+    if (hDset < 0) {
+        CPLError(CE_Failure, CPLE_OpenFailed, "Interpolation: missing dataset %s", sPath.c_str());
+        return false;
+    }
+    hid_t hSpace = H5Dget_space(hDset);
+    const int nDims = H5Sget_simple_extent_ndims(hSpace);
+    std::vector<hsize_t> dims(std::max(nDims, 0));
+    if (nDims > 0) H5Sget_simple_extent_dims(hSpace, dims.data(), nullptr);
+    hssize_t nCount = H5Sget_simple_extent_npoints(hSpace);
+    H5Sclose(hSpace);
+    if (nCount <= 0) {
+        H5Dclose(hDset);
+        return false;
+    }
+    vec.resize(static_cast<size_t>(nCount));
+    const herr_t st = H5Dread(hDset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vec.data());
+    H5Dclose(hDset);
+    if (st < 0) {
+        CPLError(CE_Failure, CPLE_FileIO, "Interpolation: failed to read %s", sPath.c_str());
+        return false;
+    }
+    if (pDims) *pDims = dims;
+    return true;
+}
+
+// Read a fixed- or variable-length string attribute of an HDF5 dataset.
+static std::string NisarReadStringAttr(hid_t hFile, const std::string& sPath, const char* pszAttr)
+{
+    std::string sResult;
+    hid_t hDset = H5Dopen2(hFile, sPath.c_str(), H5P_DEFAULT);
+    if (hDset < 0) return sResult;
+    if (H5Aexists(hDset, pszAttr) > 0) {
+        hid_t hAttr = H5Aopen(hDset, pszAttr, H5P_DEFAULT);
+        hid_t hType = H5Aget_type(hAttr);
+        if (H5Tget_class(hType) == H5T_STRING) {
+            if (H5Tis_variable_str(hType) > 0) {
+                char* psz = nullptr;
+                if (H5Aread(hAttr, hType, &psz) >= 0 && psz) {
+                    sResult = psz;
+                    H5free_memory(psz);
+                }
+            } else {
+                const size_t nSize = H5Tget_size(hType);
+                std::vector<char> buf(nSize + 1, '\0');
+                if (H5Aread(hAttr, hType, buf.data()) >= 0) sResult = buf.data();
+            }
+        }
+        H5Tclose(hType);
+        H5Aclose(hAttr);
+    }
+    H5Dclose(hDset);
+    return sResult;
+}
+
+// Parse "seconds since YYYY-MM-DDTHH:MM:SS[.fff]" into a Unix epoch (seconds).
+static bool NisarParseEpoch(const std::string& sUnits, double& dfEpoch)
+{
+    const size_t nPos = sUnits.find("since");
+    if (nPos == std::string::npos) return false;
+    int Y, M, D, h, m;
+    double s;
+    if (sscanf(sUnits.c_str() + nPos + 5, " %d-%d-%dT%d:%d:%lf", &Y, &M, &D, &h, &m, &s) != 6)
+        return false;
+    struct tm tmv = {};
+    tmv.tm_year = Y - 1900;
+    tmv.tm_mon = M - 1;
+    tmv.tm_mday = D;
+    tmv.tm_hour = h;
+    tmv.tm_min = m;
+    tmv.tm_sec = 0;
+    dfEpoch = static_cast<double>(CPLYMDHMSToUnixTime(&tmv)) + s;
+    return true;
+}
+
 
 // ====================================================================
 // NisarInterpolatedDataset Implementation
@@ -63,19 +144,25 @@ NisarInterpolatedDataset::NisarInterpolatedDataset()
 NisarInterpolatedDataset::~NisarInterpolatedDataset()
 {
     // Clean up the DEM datasets when this dataset is closed
-    if (m_poAlignedDEM) GDALClose(m_poAlignedDEM);
+    if (m_poAlignedDEM && m_poAlignedDEM != m_poRawDEM) GDALClose(m_poAlignedDEM);
     if (m_poRawDEM) GDALClose(m_poRawDEM);
+    if (m_pasGCPs) {
+        GDALDeinitGCPs(m_nGCPCount, m_pasGCPs);
+        CPLFree(m_pasGCPs);
+    }
 }
 
 #if GDAL_VERSION_MAJOR < 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
 CPLErr NisarInterpolatedDataset::GetGeoTransform(double* padfTransform)
 {
+    if (m_bRadarGrid) return CE_Failure;
     memcpy(padfTransform, m_adfTargetGeoTransform, 6 * sizeof(double));
     return CE_None;
 }
 #else
 CPLErr NisarInterpolatedDataset::GetGeoTransform(GDALGeoTransform& gt) const
 {
+    if (m_bRadarGrid) return CE_Failure;
     for (int i = 0; i < 6; ++i) {
         gt[i] = m_adfTargetGeoTransform[i];
     }
@@ -87,6 +174,164 @@ const OGRSpatialReference* NisarInterpolatedDataset::GetSpatialRef() const
 {
     return m_oSRS.IsEmpty() ? nullptr : &m_oSRS;
 }
+
+int NisarInterpolatedDataset::GetGCPCount()
+{
+    return m_nGCPCount;
+}
+
+const GDAL_GCP* NisarInterpolatedDataset::GetGCPs()
+{
+    return m_pasGCPs;
+}
+
+const OGRSpatialReference* NisarInterpolatedDataset::GetGCPSpatialRef() const
+{
+    return (m_nGCPCount > 0 && !m_oGCPSRS.IsEmpty()) ? &m_oGCPSRS : nullptr;
+}
+
+// Fractional node index of dfValue on a monotonically increasing axis (clamped).
+double NisarInterpolatedDataset::AxisToNode(const std::vector<double>& axis, double dfValue)
+{
+    const size_t n = axis.size();
+    if (n < 2) return 0.0;
+    if (dfValue <= axis.front()) return 0.0;
+    if (dfValue >= axis.back()) return static_cast<double>(n - 1);
+    const size_t i1 = std::upper_bound(axis.begin(), axis.end(), dfValue) - axis.begin();
+    const size_t i0 = i1 - 1;
+    const double dfSpan = axis[i1] - axis[i0];
+    return dfSpan > 0 ? i0 + (dfValue - axis[i0]) / dfSpan : static_cast<double>(i0);
+}
+
+NisarCubeXY NisarInterpolatedDataset::CubeXY(double dfNodeX, double dfNodeY) const
+{
+    NisarCubeXY xy;
+    dfNodeX = std::min(std::max(dfNodeX, 0.0), static_cast<double>(m_nCubeXSize - 1));
+    dfNodeY = std::min(std::max(dfNodeY, 0.0), static_cast<double>(m_nCubeYSize - 1));
+    xy.x0 = static_cast<int>(std::floor(dfNodeX));
+    xy.y0 = static_cast<int>(std::floor(dfNodeY));
+    xy.x1 = std::min(xy.x0 + 1, m_nCubeXSize - 1);
+    xy.y1 = std::min(xy.y0 + 1, m_nCubeYSize - 1);
+    xy.wx = dfNodeX - xy.x0;
+    xy.wy = dfNodeY - xy.y0;
+    return xy;
+}
+
+// Bracketing height levels for dfHeight (clamped to the cube's height range).
+void NisarInterpolatedDataset::CubeZ(double dfHeight, int& z0, int& z1, double& wz) const
+{
+    const int nZ = m_nCubeZSize;
+    z0 = 0;
+    z1 = 0;
+    wz = 0.0;
+    if (nZ < 2) return;
+    if (dfHeight <= m_zVect.front()) return;
+    if (dfHeight >= m_zVect.back()) {
+        z0 = z1 = nZ - 1;
+        return;
+    }
+    z1 = static_cast<int>(std::upper_bound(m_zVect.begin(), m_zVect.end(), dfHeight) - m_zVect.begin());
+    z0 = z1 - 1;
+    const double dfSpan = m_zVect[z1] - m_zVect[z0];
+    wz = dfSpan > 0 ? (dfHeight - m_zVect[z0]) / dfSpan : 0.0;
+}
+
+// Load the Level-1 radar axes, coordinateX/Y cubes, GCPs and prepare the DEM in cube CRS.
+bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset* poSwath,
+                                             const std::string& sCubeGroup,
+                                             const std::string& sSwathGroup)
+{
+    const hid_t hFile = poCube->GetHDF5Handle();
+    std::vector<hsize_t> dimsX, dimsY;
+    if (!NisarReadDoubles(hFile, sCubeGroup + "/slantRange", m_cubeRange) ||
+        !NisarReadDoubles(hFile, sCubeGroup + "/zeroDopplerTime", m_cubeTime) ||
+        !NisarReadDoubles(hFile, sCubeGroup + "/coordinateX", m_coordX, &dimsX) ||
+        !NisarReadDoubles(hFile, sCubeGroup + "/coordinateY", m_coordY, &dimsY))
+        return false;
+
+    if (!std::is_sorted(m_zVect.begin(), m_zVect.end())) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: heightAboveEllipsoid levels must be ascending.");
+        return false;
+    }
+    const size_t nExpected = static_cast<size_t>(m_nCubeZSize) * m_nCubeYSize * m_nCubeXSize;
+    if (dimsX.size() != 3 || dimsY.size() != 3 ||
+        m_coordX.size() != nExpected || m_coordY.size() != nExpected ||
+        static_cast<int>(m_cubeRange.size()) != m_nCubeXSize ||
+        static_cast<int>(m_cubeTime.size()) != m_nCubeYSize) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: geolocationGrid axes/coordinate cubes do not match the "
+                 "%s cube (%d x %d x %d).", sCubeGroup.c_str(),
+                 m_nCubeXSize, m_nCubeYSize, m_nCubeZSize);
+        return false;
+    }
+
+    // Swath axes: slantRange per column, zeroDopplerTime per line (may use another epoch).
+    const std::string sSwathsRoot = sSwathGroup.substr(0, sSwathGroup.rfind('/'));
+    if (!NisarReadDoubles(hFile, sSwathGroup + "/slantRange", m_swathRange) ||
+        !NisarReadDoubles(hFile, sSwathsRoot + "/zeroDopplerTime", m_swathTime))
+        return false;
+    if (static_cast<int>(m_swathRange.size()) != nRasterXSize ||
+        static_cast<int>(m_swathTime.size()) != nRasterYSize) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: swath axes (%d x %d) do not match the reference raster (%d x %d).",
+                 static_cast<int>(m_swathRange.size()), static_cast<int>(m_swathTime.size()),
+                 nRasterXSize, nRasterYSize);
+        return false;
+    }
+    double dfCubeEpoch = 0.0, dfSwathEpoch = 0.0;
+    if (NisarParseEpoch(NisarReadStringAttr(hFile, sCubeGroup + "/zeroDopplerTime", "units"), dfCubeEpoch) &&
+        NisarParseEpoch(NisarReadStringAttr(hFile, sSwathsRoot + "/zeroDopplerTime", "units"), dfSwathEpoch) &&
+        dfCubeEpoch != dfSwathEpoch) {
+        for (auto& t : m_swathTime) t += dfSwathEpoch - dfCubeEpoch;
+    }
+
+    // Cube CRS (geolocationGrid/epsg) and GCPs pass through from the swath raster.
+    std::vector<double> epsg;
+    if (!NisarReadDoubles(hFile, sCubeGroup + "/epsg", epsg) ||
+        m_oGCPSRS.importFromEPSG(static_cast<int>(epsg[0])) != OGRERR_NONE) {
+        CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: invalid geolocationGrid/epsg.");
+        return false;
+    }
+    m_oGCPSRS.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    SetMetadataItem("NISAR_GEOLOCATION_EPSG", CPLSPrintf("%d", static_cast<int>(epsg[0])));
+    m_nGCPCount = poSwath->GetGCPCount();
+    if (m_nGCPCount > 0) {
+        m_pasGCPs = GDALDuplicateGCPs(m_nGCPCount, poSwath->GetGCPs());
+    }
+
+    // DEM must be sampled in the cube CRS; warp lazily only if it differs.
+    const OGRSpatialReference* poDEMSRS = m_poRawDEM->GetSpatialRef();
+    if (poDEMSRS == nullptr) {
+        CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: DEM has no spatial reference.");
+        return false;
+    }
+    if (poDEMSRS->IsSame(&m_oGCPSRS)) {
+        m_poAlignedDEM = m_poRawDEM;
+    } else {
+        char* pszWKT = nullptr;
+        m_oGCPSRS.exportToWkt(&pszWKT);
+        m_poAlignedDEM = GDALDataset::FromHandle(
+            GDALAutoCreateWarpedVRT(m_poRawDEM, nullptr, pszWKT, GRA_Bilinear, 0.0, nullptr));
+        CPLFree(pszWKT);
+        if (m_poAlignedDEM == nullptr) {
+            CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: failed to warp DEM to EPSG:%d.",
+                     static_cast<int>(epsg[0]));
+            return false;
+        }
+    }
+    GDALGetGeoTransform(m_poAlignedDEM, m_adfDEMGeoTransform);
+    if (!GDALInvGeoTransform(m_adfDEMGeoTransform, m_adfDEMInvGeoTransform)) {
+        CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: DEM geotransform is not invertible.");
+        return false;
+    }
+    int bHasNoData = FALSE;
+    m_dfDEMNoData = m_poAlignedDEM->GetRasterBand(1)->GetNoDataValue(&bHasNoData);
+    m_bDEMHasNoData = bHasNoData != FALSE;
+    m_bRadarGrid = true;
+    return true;
+}
+
 GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
 {
     char** papszOO = poOpenInfo->papszOpenOptions;
@@ -154,22 +399,17 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
     const std::string sFreq = pszFreqOpt ? NisarUpper(pszFreqOpt) : std::string("A");
     std::string sPol = pszPolOpt ? NisarUpper(pszPolOpt) : std::string();
     std::string sRefDesc;
-    GDALDataset* poTargetGridDS = nullptr;
+    NisarDataset* poTargetGridDS = nullptr;
 
-    if (bIsLevel1) {
-        CPLError(CE_Failure, CPLE_NotSupported,
-                 "Interpolation: Level-1 product %s is not supported yet (radar coordinates).",
-                 sProduct.c_str());
-        GDALClose(poCoarseCubeDS);
-        return nullptr;
-    }
-    else if (EQUAL(sProduct.c_str(), "GCOV") || EQUAL(sProduct.c_str(), "GSLC")) {
-        // grids/frequency<F>/<POL>: let NisarDataset build and validate the path
+    if (EQUAL(sProduct.c_str(), "RSLC") || EQUAL(sProduct.c_str(), "GCOV") ||
+        EQUAL(sProduct.c_str(), "GSLC")) {
+        // L1 swaths/frequency<F>/<POL> or L2 grids/frequency<F>/<POL>: NisarDataset builds the path
         char** papszRefOO = nullptr;
         papszRefOO = CSLSetNameValue(papszRefOO, "INST", sInst.c_str());
         papszRefOO = CSLSetNameValue(papszRefOO, "FREQ", sFreq.c_str());
         if (!sPol.empty()) papszRefOO = CSLSetNameValue(papszRefOO, "POL", sPol.c_str());
-        sRefDesc = CPLSPrintf("%s grids/frequency%s/%s", sProduct.c_str(), sFreq.c_str(),
+        sRefDesc = CPLSPrintf("%s %s/frequency%s/%s", sProduct.c_str(),
+                              bIsLevel1 ? "swaths" : "grids", sFreq.c_str(),
                               sPol.empty() ? "<default POL>" : sPol.c_str());
         poTargetGridDS = NisarOpenInternal(sQuotedFile, papszRefOO);
         CSLDestroy(papszRefOO);
@@ -179,6 +419,13 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
         sRefDesc = "/science/" + sInst + "/GUNW/grids/frequency" + sFreq +
                    "/unwrappedInterferogram/" + sPol + "/unwrappedPhase";
         poTargetGridDS = NisarOpenInternal(sQuotedFile + ":" + sRefDesc, nullptr);
+    }
+    else if (bIsLevel1) {
+        CPLError(CE_Failure, CPLE_NotSupported,
+                 "Interpolation: Level-1 product %s is not supported yet (only RSLC swaths).",
+                 sProduct.c_str());
+        GDALClose(poCoarseCubeDS);
+        return nullptr;
     }
     else {
         CPLError(CE_Failure, CPLE_NotSupported,
@@ -202,33 +449,82 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
 
     poDS->nRasterXSize = poTargetGridDS->GetRasterXSize();
     poDS->nRasterYSize = poTargetGridDS->GetRasterYSize();
-    GDALGetGeoTransform(poTargetGridDS, poDS->m_adfTargetGeoTransform);
-
-    const OGRSpatialReference* poTargetSRS = poTargetGridDS->GetSpatialRef();
-    if (poTargetSRS) {
-        poDS->m_oSRS = *poTargetSRS;
+    if (!bIsLevel1) {
+        GDALGetGeoTransform(poTargetGridDS, poDS->m_adfTargetGeoTransform);
+        const OGRSpatialReference* poTargetSRS = poTargetGridDS->GetSpatialRef();
+        if (poTargetSRS) {
+            poDS->m_oSRS = *poTargetSRS;
+        }
     }
 
     poDS->SetDescription(poOpenInfo->pszFilename);
     poDS->SetMetadataItem("NISAR_PRODUCT_TYPE", sProduct.c_str());
     poDS->SetMetadataItem("NISAR_CUBE_PATH", sCubePath.c_str());
     const char* pszRefPath = poTargetGridDS->GetMetadataItem("HDF5_PATH");
-    poDS->SetMetadataItem("NISAR_REFERENCE_GRID",
-                          pszRefPath ? pszRefPath : poTargetGridDS->GetDescription());
+    const std::string sRefPath = pszRefPath ? pszRefPath : poTargetGridDS->GetDescription();
+    poDS->SetMetadataItem("NISAR_REFERENCE_GRID", sRefPath.c_str());
     if (pszQuantity) poDS->SetMetadataItem("NISAR_QUANTITY", pszQuantity);
     for (const char* pszKey : { "description", "units", "long_name" }) {
         const char* pszVal = poCoarseCubeDS->GetMetadataItem(pszKey);
         if (pszVal) poDS->SetMetadataItem(pszKey, pszVal);
     }
-    GDALClose(poTargetGridDS); // Done with the target grid reference
 
-    // Open and Warp the DEM
-    CPLDebug("NISAR_DRIVER", "Interpolation: Warping DEM from %s", pszDemFile);
+    // Load Coarse Cube Data into RAM
+    poDS->m_nCubeXSize = poCoarseCubeDS->GetRasterXSize();
+    poDS->m_nCubeYSize = poCoarseCubeDS->GetRasterYSize();
+    poDS->m_nCubeZSize = poCoarseCubeDS->GetRasterCount();
+
+    // Read Z-axis (heightAboveEllipsoid) from metadata
+    poDS->m_zVect.reserve(poDS->m_nCubeZSize);
+    for (int i = 1; i <= poDS->m_nCubeZSize; ++i) {
+        GDALRasterBand* pCBand = poCoarseCubeDS->GetRasterBand(i);
+        const char* pszHeight = pCBand->GetMetadataItem("Z_VALUE");
+        poDS->m_zVect.push_back(pszHeight ? CPLAtof(pszHeight) : static_cast<double>(i));
+    }
+
+    // Read the entire 3D cube into a flat 1D std::vector
+    const size_t nTotalCubePixels =
+        static_cast<size_t>(poDS->m_nCubeXSize) * poDS->m_nCubeYSize * poDS->m_nCubeZSize;
+    poDS->m_cubeData.resize(nTotalCubePixels);
+
+    for (int z = 0; z < poDS->m_nCubeZSize; ++z) {
+        GDALRasterBand* pCBand = poCoarseCubeDS->GetRasterBand(z + 1);
+        float* pDst = poDS->m_cubeData.data() +
+                      (static_cast<size_t>(z) * poDS->m_nCubeXSize * poDS->m_nCubeYSize);
+        if (pCBand->RasterIO(GF_Read, 0, 0, poDS->m_nCubeXSize, poDS->m_nCubeYSize,
+                             pDst, poDS->m_nCubeXSize, poDS->m_nCubeYSize,
+                             GDT_Float32, 0, 0, nullptr) != CE_None)
+        {
+            CPLError(CE_Failure, CPLE_AppDefined, "Failed to read coarse cube data via RasterIO.");
+            delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
+        }
+    }
+
+    // Open the DEM
+    CPLDebug("NISAR_DRIVER", "Interpolation: Opening DEM %s", pszDemFile);
     poDS->m_poRawDEM = (GDALDataset*)GDALOpenEx(pszDemFile, GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr);
     if (!poDS->m_poRawDEM) {
         CPLError(CE_Failure, CPLE_OpenFailed, "Failed to open DEM file: %s", pszDemFile);
-        delete poDS; GDALClose(poCoarseCubeDS); return nullptr;
+        delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
     }
+
+    if (bIsLevel1) {
+        // Radar grid: axes, coordinateX/Y cubes, GCP passthrough, DEM in cube CRS.
+        poDS->m_dfNoDataHeight = CPLAtof(CSLFetchNameValueDef(papszOO, "DEM_NODATA_HEIGHT", "0"));
+        const std::string sCubeGroup = sCubePath.substr(0, sCubePath.rfind('/'));
+        const std::string sSwathGroup = sRefPath.substr(0, sRefPath.rfind('/'));
+        if (!poDS->InitRadarGrid(poCoarseCubeDS, poTargetGridDS, sCubeGroup, sSwathGroup)) {
+            delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
+        }
+        poDS->SetMetadataItem("NISAR_GRID_TYPE", "RADAR");
+        poDS->SetMetadataItem("DEM_NODATA_HEIGHT", CPLSPrintf("%g", poDS->m_dfNoDataHeight));
+        GDALClose(poTargetGridDS);
+        GDALClose(poCoarseCubeDS);
+        poDS->SetBand(1, new NisarInterpolatedRasterBand(poDS, 1));
+        return poDS;
+    }
+    GDALClose(poTargetGridDS); // Done with the target grid reference
+    poDS->SetMetadataItem("NISAR_GRID_TYPE", "GEOCODED");
 
     char* pszTargetWKT = nullptr;
     poDS->m_oSRS.exportToWkt(&pszTargetWKT);
@@ -285,13 +581,8 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
     poDS->m_poAlignedDEM->SetProjection(pszTargetWKT);
     CPLFree(pszTargetWKT);
 
-    // Load Coarse Cube Data into RAM
-    poDS->m_nCubeXSize = poCoarseCubeDS->GetRasterXSize();
-    poDS->m_nCubeYSize = poCoarseCubeDS->GetRasterYSize();
-    poDS->m_nCubeZSize = poCoarseCubeDS->GetRasterCount();
+    // Coarse cube georeferencing; the inverse maps target (X,Y) to cube pixels.
     GDALGetGeoTransform(poCoarseCubeDS, poDS->m_adfCubeGeoTransform);
-
-    // Calculate the inverse transform ONCE during setup
     if (!GDALInvGeoTransform(poDS->m_adfCubeGeoTransform, poDS->m_adfCubeInvGeoTransform)) 
     {
         CPLError(CE_Failure, CPLE_AppDefined, 
@@ -299,32 +590,6 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
         delete poDS; 
         GDALClose(poCoarseCubeDS);
         return nullptr; 
-    }
-
-    // Read Z-axis (heightAboveEllipsoid) from metadata
-    poDS->m_zVect.reserve(poDS->m_nCubeZSize);
-    for (int i = 1; i <= poDS->m_nCubeZSize; ++i) {
-        GDALRasterBand* pCBand = poCoarseCubeDS->GetRasterBand(i);
-        const char* pszHeight = pCBand->GetMetadataItem("Z_VALUE");
-        poDS->m_zVect.push_back(pszHeight ? CPLAtof(pszHeight) : static_cast<double>(i));
-    }
-
-    // Read the entire 3D cube into a flat 1D std::vector
-    int nTotalCubePixels = poDS->m_nCubeXSize * poDS->m_nCubeYSize * poDS->m_nCubeZSize;
-    poDS->m_cubeData.resize(nTotalCubePixels);
-
-    for (int z = 0; z < poDS->m_nCubeZSize; ++z) {
-        GDALRasterBand* pCBand = poCoarseCubeDS->GetRasterBand(z + 1);
-        float* pDst = poDS->m_cubeData.data() + (z * poDS->m_nCubeXSize * poDS->m_nCubeYSize);
-        if (pCBand->RasterIO(GF_Read, 0, 0, poDS->m_nCubeXSize, poDS->m_nCubeYSize,
-                             pDst, poDS->m_nCubeXSize, poDS->m_nCubeYSize,
-                             GDT_Float32, 0, 0, nullptr) != CE_None)
-        {
-            CPLError(CE_Failure, CPLE_AppDefined, "Failed to read coarse cube data via RasterIO.");
-            delete poDS;
-            GDALClose(poCoarseCubeDS);
-            return nullptr;
-        }
     }
 
     GDALClose(poCoarseCubeDS); // Done with the coarse cube

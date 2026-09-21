@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 import numpy as np
 import pytest
@@ -32,7 +33,7 @@ try:
 except ImportError:  # pragma: no cover
     earthaccess = None
 
-from osgeo import gdal
+from osgeo import gdal, osr
 
 gdal.UseExceptions()
 
@@ -50,6 +51,8 @@ SHORT_NAMES = {
 }
 QUANTITY = "incidenceAngle"
 WINDOW_M = 10000.0  # side of the test window, metres
+RSLC_GRID = "/science/LSAR/RSLC/metadata/geolocationGrid"
+RSLC_WINDOW = (20000, 3000, 600, 500)  # xoff, yoff, xsize, ysize in the HH swath
 
 
 def _in_us_west_2(target="s3.us-west-2.amazonaws.com", threshold_ms=1.0):
@@ -130,6 +133,19 @@ class Granules:
     def conn(self, product, path=None):
         s = f'NISAR:"{self.uri(product)}"'
         return s + ":" + path if path else s
+
+    def hdf5_arrays(self, product, *paths):
+        """Raw HDF5 arrays (via GDAL's HDF5 multidim driver) for reference computations."""
+        if gdal.GetDriverByName("HDF5") is None:
+            pytest.skip("GDAL HDF5 driver not available")
+        uri = self.uri(product)
+        if uri.startswith("http"):
+            uri = "/vsicurl/" + uri
+        elif uri.startswith("s3://"):
+            uri = "/vsis3/" + uri[5:]
+        root = gdal.OpenEx(uri, gdal.OF_MULTIDIM_RASTER,
+                           allowed_drivers=["HDF5"]).GetRootGroup()
+        return [root.OpenMDArrayFromFullname(p).ReadAsArray() for p in paths]
 
     def window(self):
         """WINDOW_M square at the GCOV grid centre, snapped to 40 m so it tiles
@@ -251,9 +267,190 @@ def test_missing_quantity_fails(granules):
                     open_options=["QUANTITY=notACube", f"DEM_FILE={granules.dem}"])
 
 
-def test_level1_rejected(granules):
-    with pytest.raises(RuntimeError, match="Level-1 product RSLC is not supported yet"):
-        _open_interp(granules, "RSLC")
+# --- Level-1 (RSLC): interpolation in radar coordinates ---------------------------
+
+
+class RslcCube:
+    """Geolocation-grid cubes + axes with an independent numpy trilinear kernel."""
+
+    def __init__(self, granules):
+        (self.hgt, self.crange, self.ctime, self.srange, self.stime,
+         self.cX, self.cY, self.cQ) = granules.hdf5_arrays(
+            "RSLC",
+            RSLC_GRID + "/heightAboveEllipsoid", RSLC_GRID + "/slantRange",
+            RSLC_GRID + "/zeroDopplerTime",
+            "/science/LSAR/RSLC/swaths/frequencyA/slantRange",
+            "/science/LSAR/RSLC/swaths/zeroDopplerTime",
+            RSLC_GRID + "/coordinateX", RSLC_GRID + "/coordinateY",
+            RSLC_GRID + "/" + QUANTITY)
+
+    @staticmethod
+    def _node(axis, v):
+        i = int(np.clip(np.searchsorted(axis, v) - 1, 0, len(axis) - 2))
+        return i, float(np.clip((v - axis[i]) / (axis[i + 1] - axis[i]), 0.0, 1.0))
+
+    def trilinear(self, cube, h, pixel, line):
+        zi, wz = self._node(self.hgt, h)
+        yi, wy = self._node(self.ctime, self.stime[line])
+        xi, wx = self._node(self.crange, self.srange[pixel])
+        c = 0.0
+        for dz, fz in ((0, 1 - wz), (1, wz)):
+            for dy, fy in ((0, 1 - wy), (1, wy)):
+                for dx, fx in ((0, 1 - wx), (1, wx)):
+                    c += cube[zi + dz, yi + dy, xi + dx] * fz * fy * fx
+        return c
+
+    def constant_dem(self, path, value, nodata=None):
+        """Flat EPSG:4326 GeoTIFF covering the geolocation-grid footprint."""
+        ds = gdal.GetDriverByName("GTiff").Create(path, 64, 64, 1, gdal.GDT_Float32)
+        x0, x1 = self.cX.min() - 1, self.cX.max() + 1
+        y0, y1 = self.cY.min() - 1, self.cY.max() + 1
+        ds.SetGeoTransform([x0, (x1 - x0) / 64, 0, y1, 0, -(y1 - y0) / 64])
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        ds.SetProjection(srs.ExportToWkt())
+        ds.GetRasterBand(1).Fill(value)
+        if nodata is not None:
+            ds.GetRasterBand(1).SetNoDataValue(nodata)
+        ds = None
+        return path
+
+
+@pytest.fixture(scope="module")
+def rslc_cube(granules):
+    return RslcCube(granules)
+
+
+@pytest.fixture(scope="module")
+def tmp_dir():
+    with tempfile.TemporaryDirectory() as d:
+        yield d
+
+
+def _read_rslc(granules, quantity=QUANTITY, dem=None, **oo):
+    opts = [f"QUANTITY={quantity}", f"DEM_FILE={dem or granules.dem}"]
+    opts += [f"{k}={v}" for k, v in oo.items()]
+    ds = gdal.OpenEx(granules.conn("RSLC"), gdal.OF_RASTER, open_options=opts)
+    return ds.ReadAsArray(*RSLC_WINDOW)
+
+
+def _sample_points(n=150, seed=0):
+    xoff, yoff, xs, ys = RSLC_WINDOW
+    rng = np.random.default_rng(seed)
+    return rng.integers(xoff, xoff + xs, n), rng.integers(yoff, yoff + ys, n)
+
+
+def test_rslc_radar_grid_and_gcps(granules):
+    ds = _open_interp(granules, "RSLC")
+    ref = gdal.OpenEx(granules.conn("RSLC"), gdal.OF_RASTER,
+                      open_options=["FREQ=A", "POL=HH"])
+    assert (ds.RasterXSize, ds.RasterYSize) == (ref.RasterXSize, ref.RasterYSize)
+    assert ds.GetRasterBand(1).DataType == gdal.GDT_Float32
+    md = ds.GetMetadata()
+    assert md["NISAR_PRODUCT_TYPE"] == "RSLC"
+    assert md["NISAR_GRID_TYPE"] == "RADAR"
+    assert md["NISAR_CUBE_PATH"] == f"{RSLC_GRID}/{QUANTITY}"
+    assert md["NISAR_REFERENCE_GRID"] == "/science/LSAR/RSLC/swaths/frequencyA/HH"
+    assert md["NISAR_GEOLOCATION_EPSG"] == "4326"
+    assert md["DEM_NODATA_HEIGHT"] == "0"
+    # radar grid: no geotransform, GCPs + GCP SRS passed through from the swath
+    assert ds.GetGeoTransform(can_return_null=True) is None
+    assert ds.GetGCPCount() == ref.GetGCPCount() > 0
+    assert ds.GetGCPSpatialRef().IsSame(ref.GetGCPSpatialRef())
+    assert ds.GetGCPSpatialRef().GetAuthorityCode(None) == "4326"
+    a, b = ds.GetGCPs(), ref.GetGCPs()
+    assert all((p.GCPPixel, p.GCPLine, p.GCPX, p.GCPY, p.GCPZ) ==
+               (q.GCPPixel, q.GCPLine, q.GCPX, q.GCPY, q.GCPZ)
+               for p, q in zip(a[::97], b[::97]))
+
+
+@pytest.mark.parametrize("height", [-500.0, 0.0, 1234.5, 4000.0])
+@pytest.mark.parametrize("quantity", ["coordinateX", "coordinateY", QUANTITY])
+def test_rslc_constant_dem_matches_trilinear(granules, rslc_cube, tmp_dir, height, quantity):
+    """With a flat DEM the fixed-point height solve must land exactly on that height,
+    so the driver output equals a direct trilinear lookup at (h, t, r)."""
+    dem = rslc_cube.constant_dem(os.path.join(tmp_dir, f"dem_{height}.tif"), height)
+    out = _read_rslc(granules, quantity, dem)
+    cube = {"coordinateX": rslc_cube.cX, "coordinateY": rslc_cube.cY,
+            QUANTITY: rslc_cube.cQ}[quantity]
+    xoff, yoff = RSLC_WINDOW[:2]
+    xs, ys = _sample_points()
+    got = out[ys - yoff, xs - xoff]
+    ref = np.array([rslc_cube.trilinear(cube, height, x, y) for x, y in zip(xs, ys)])
+    tol = 2e-5 if quantity == QUANTITY else 1e-5  # float32 output precision
+    assert np.abs(got - ref).max() < tol
+
+
+def test_rslc_dem_nodata_height_default_and_override(granules, rslc_cube, tmp_dir):
+    nodata = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_nd.tif"), -9999.0, nodata=-9999.0)
+    flat0 = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_0.tif"), 0.0)
+    flat1k = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_1k.tif"), 1000.0)
+    assert np.array_equal(_read_rslc(granules, dem=nodata), _read_rslc(granules, dem=flat0))
+    over = _read_rslc(granules, dem=nodata, DEM_NODATA_HEIGHT=1000)
+    assert np.array_equal(over, _read_rslc(granules, dem=flat1k))
+    assert np.abs(over - _read_rslc(granules, dem=flat0)).max() > 0.01
+
+
+def test_rslc_real_dem_self_consistent(granules, rslc_cube):
+    """Terrain solve: the DEM height at the output (X, Y) must map back through the
+    coordinate cubes to the same (X, Y), and give the same quantity value."""
+    X = _read_rslc(granules, "coordinateX")
+    Y = _read_rslc(granules, "coordinateY")
+    Q = _read_rslc(granules)
+    dem = gdal.Open(granules.dem)
+    band = dem.GetRasterBand(1)
+    inv = gdal.InvGeoTransform(dem.GetGeoTransform())
+    xoff, yoff = RSLC_WINDOW[:2]
+    xs, ys = _sample_points(60)
+    worst = np.zeros(3)
+    heights = []
+    for x, y in zip(xs, ys):
+        lon, lat = float(X[y - yoff, x - xoff]), float(Y[y - yoff, x - xoff])
+        u = inv[0] + lon * inv[1] + lat * inv[2] - 0.5
+        v = inv[3] + lon * inv[4] + lat * inv[5] - 0.5
+        i, j = int(np.floor(u)), int(np.floor(v))
+        blk = band.ReadAsArray(i, j, 2, 2).astype(float)
+        fu, fv = u - i, v - j
+        h = ((blk[0, 0] * (1 - fu) + blk[0, 1] * fu) * (1 - fv) +
+             (blk[1, 0] * (1 - fu) + blk[1, 1] * fu) * fv)
+        heights.append(h)
+        worst = np.maximum(worst, [
+            abs(rslc_cube.trilinear(rslc_cube.cX, h, x, y) - lon),
+            abs(rslc_cube.trilinear(rslc_cube.cY, h, x, y) - lat),
+            abs(rslc_cube.trilinear(rslc_cube.cQ, h, x, y) - Q[y - yoff, x - xoff])])
+    assert np.ptp(heights) > 50.0  # the window is over real terrain
+    assert worst[0] < 1e-5 and worst[1] < 1e-5 and worst[2] < 1e-3
+
+
+def test_rslc_matches_gcov_on_common_ground(granules):
+    """Same acquisition + DEM: RSLC pixels mapped to ground through coordinateX/Y
+    must read the same incidence angle as the GCOV interpolation at that point."""
+    X = _read_rslc(granules, "coordinateX")
+    Y = _read_rslc(granules, "coordinateY")
+    Q = _read_rslc(granules)
+    gcov = _open_interp(granules, "GCOV")
+    src = osr.SpatialReference()
+    src.ImportFromEPSG(4326)
+    src.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ct = osr.CoordinateTransformation(src, gcov.GetSpatialRef())
+    inv = gdal.InvGeoTransform(gcov.GetGeoTransform())
+    xoff, yoff = RSLC_WINDOW[:2]
+    xs, ys = _sample_points(100, seed=1)
+    diffs = []
+    for x, y in zip(xs, ys):
+        e, n, _ = ct.TransformPoint(float(X[y - yoff, x - xoff]), float(Y[y - yoff, x - xoff]))
+        u = inv[0] + e * inv[1] + n * inv[2] - 0.5
+        v = inv[3] + e * inv[4] + n * inv[5] - 0.5
+        i, j = int(np.floor(u)), int(np.floor(v))
+        blk = gcov.ReadAsArray(i, j, 2, 2).astype(float)
+        if np.isnan(blk).any():
+            continue
+        fu, fv = u - i, v - j
+        g = ((blk[0, 0] * (1 - fu) + blk[0, 1] * fu) * (1 - fv) +
+             (blk[1, 0] * (1 - fu) + blk[1, 1] * fu) * fv)
+        diffs.append(g - Q[y - yoff, x - xoff])
+    assert len(diffs) > 50
+    assert np.abs(diffs).max() < 1e-3
 
 
 if __name__ == "__main__":

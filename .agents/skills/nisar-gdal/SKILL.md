@@ -74,8 +74,9 @@ matched case-insensitively by GDAL; the canonical spelling is upper case.
 | `METADATA` | `ALL` or comma list of `ATTITUDE`, `CALIBRATIONINFORMATION`, `CEOSANALYSISREADYDATA`, `ORBIT`, `PROCESSINGINFORMATION`, `RADARGRID`, `SOURCEDATA` | Loads the named `/metadata/<group>` trees into `NISAR_<NAME>` metadata domains. Pair with `gdalinfo -mdd all` (or `-mdd NISAR_ORBIT`) or you will not see them. |
 | `MASK` | `YES` / `NO` (default `NO`) | Expose the product validity mask as the GDAL mask band. |
 | `DEM_FILE` | path or `/vsi…` URL | DEM for 3D metadata-cube interpolation. Required with `QUANTITY`. |
-| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto the target grid. |
-| `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>`. |
+| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto a geocoded (L2/L3) target grid; unused on L1. |
+| `DEM_NODATA_HEIGHT` | metres, default `0` | L1 interpolation only: height assumed where the DEM is nodata / absent (ocean). |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>` (L2/L3) or `metadata/geolocationGrid/<QUANTITY>` (L1). |
 | `ENABLE_PAGE_BUFFERING` | boolean, default `NO` | Reserved. The driver always sets a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 **There are no `LAYER` or `MEASURE` options.** GUNW/GOFF/RUNW/RIFG layers must be addressed by
@@ -194,6 +195,9 @@ gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=
 # explicit cube path + GSLC frequency-B HV grid
 gdal_translate -oo QUANTITY=incidenceAngle -oo FREQ=B -oo POL=HV -oo DEM_FILE="$DEM" \
   NISAR:"$GSLC":/science/LSAR/GSLC/metadata/radarGrid/incidenceAngle inc_gslc_B.tif
+# RSLC: radar-coordinate output on the HH swath grid, GCPs attached; ocean/DEM gaps at 0 m
+gdal_translate -co TILED=YES -co COMPRESS=ZSTD -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" \
+  -oo DEM_NODATA_HEIGHT=0 NISAR:"$RSLC" inc_rslc.tif
 ```
 
 What the driver does (v0.7.0):
@@ -205,13 +209,22 @@ What the driver does (v0.7.0):
    identification metadata ("Failed to open valid 3D coarse metadata cube at …" if absent).
 3. The **target grid** is chosen from the product type in the granule, honouring `INST`/`FREQ`/`POL`:
    GCOV, GSLC → `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `HHHH` / `HH`);
-   GUNW → `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`).
-   L1 (RSLC/RIFG/RUNW) fails with "Level-1 product … is not supported yet (radar coordinates)".
-4. The DEM is a lazily-warped VRT on the target grid (`DEM_RESAMPLING`; blocks resampled on demand,
-   so memory is bounded on GSLC-sized grids); the whole cube is loaded into RAM and each output
-   pixel is interpolated in height. Output is a single-band **Float32** raster with the target grid's
-   georeferencing, 512×512 blocks, NaN where the cube is missing, height 0 outside DEM coverage.
-5. The result carries `NISAR_PRODUCT_TYPE`, `NISAR_CUBE_PATH`, `NISAR_REFERENCE_GRID` and
+   GUNW → `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`);
+   RSLC → `.../swaths/frequency<F>/<POL>` (default `HH`), cube under `metadata/geolocationGrid`.
+   RIFG/RUNW fail with "Level-1 product … is not supported yet (only RSLC swaths)".
+4. L2/L3: the DEM is a lazily-warped VRT on the target grid (`DEM_RESAMPLING`; blocks resampled on
+   demand, so memory is bounded on GSLC-sized grids); the whole cube is loaded into RAM and each
+   output pixel is interpolated in height. Output is a single-band **Float32** raster with the target
+   grid's georeferencing, 512×512 blocks, NaN where the cube is missing, height 0 outside DEM coverage.
+5. RSLC: output pixels are (slant range, zero-Doppler time) from the swath vectors, indexed into
+   the cube by the geolocation grid's `slantRange`/`zeroDopplerTime` axes. Per pixel the terrain
+   height is solved by fixed-point iteration h → DEM(coordinateX(h), coordinateY(h)) (bilinear DEM
+   sample in the geolocation CRS, 0.1 m tolerance, ≤10 passes), DEM nodata/absent →
+   `DEM_NODATA_HEIGHT`. No GeoTransform; the swath GCPs + GCP CRS are passed through
+   (`NISAR_GRID_TYPE=RADAR`, `NISAR_GEOLOCATION_EPSG`), so `gdalwarp` the result like the swath.
+   `QUANTITY=coordinateX|coordinateY` yields the solved ground coordinates (Float32 precision).
+   Observed: full 26126×7600 swath in 37 s / ~1.2 GB RSS over HTTPS; ~10 ms per 512×512 block.
+6. The result carries `NISAR_PRODUCT_TYPE`, `NISAR_CUBE_PATH`, `NISAR_REFERENCE_GRID` and
    `NISAR_QUANTITY` metadata items recording what was resolved.
 
 Public DEM (observed): `/vsis3/sds-n-cumulus-prod-nisar-products/DEM/v1.2/EPSG4326/EPSG4326.vrt`

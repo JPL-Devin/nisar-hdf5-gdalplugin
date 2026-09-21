@@ -71,7 +71,8 @@ void GDALRegister_NISAR()
                                   <Value>CUBIC</Value>
                                   <Value>CUBICSPLINE</Value>
                                   </Option>
-                                  <Option name='QUANTITY' type='string' description='Metadata-cube quantity to interpolate onto the imaging grid (e.g. incidenceAngle). Resolved under metadata/radarGrid (L2) when no HDF5 path is given; reference grid follows INST/FREQ/POL'/>
+                                  <Option name='DEM_NODATA_HEIGHT' type='float' description='Height (m) assumed where the DEM is nodata or absent (L1 radar-grid interpolation)' default='0'/>
+                                  <Option name='QUANTITY' type='string' description='Metadata-cube quantity to interpolate onto the imaging grid (e.g. incidenceAngle). Resolved under metadata/radarGrid (L2) or metadata/geolocationGrid (L1) when no HDF5 path is given; reference grid follows INST/FREQ/POL'/>
                                   <Option name='MASK' type='boolean' description='Apply valid data mask (default NO)'/>
                                   </OpenOptionList>)");
     poDriver->pfnOpen = NisarDataset::Open;
