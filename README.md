@@ -415,7 +415,7 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 .
 ├── README.md                      This file
 ├── BUILDING.md                    Building the plugin / conda package (macOS native, Linux via Docker)
-├── docs/HOWTO.md                  Reading NISAR Products with GDAL: task-oriented user guide
+├── docs/HOWTO.md                  Reading NISAR Products with GDAL: task-oriented user guide (also as .docx)
 ├── Level_1_Product_Processing.md  How GCPs are derived for L1 products
 ├── L2 3D Data Cube Interpolation Implementation Plan.md
 ├── Dockerfile                     Multi-arch (x86_64 / arm64) AlmaLinux conda-build image
