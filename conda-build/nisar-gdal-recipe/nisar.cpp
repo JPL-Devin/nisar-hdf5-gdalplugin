@@ -48,7 +48,7 @@ void GDALRegister_NISAR()
     // with this driver in multi-threaded scenarios.
     poDriver->SetMetadataItem("GDAL_THREAD_SAFE", "YES");
     poDriver->SetMetadataItem("GDAL_RAW_BINARY_LAYOUT", "YES");
-    poDriver->SetMetadataItem( "DRIVER_VERSION", "v0.3.1 (Build Date: " __DATE__ " " __TIME__ ")" );
+    poDriver->SetMetadataItem( "DRIVER_VERSION", "v0.6.6 (Build Date: " __DATE__ " " __TIME__ ")" );
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME,
                                "NISAR HDF5" );
