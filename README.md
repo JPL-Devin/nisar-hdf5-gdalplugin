@@ -160,8 +160,9 @@ argument of `gdal.OpenEx()` in Python.
 | `METADATA` | `ALL` or a comma-separated list of `ATTITUDE`, `CALIBRATIONINFORMATION`, `CEOSANALYSISREADYDATA`, `ORBIT`, `PROCESSINGINFORMATION`, `RADARGRID`, `SOURCEDATA` | *(none)* | Loads the selected `/metadata/...` HDF5 groups and exposes them as GDAL metadata domains named `NISAR_<GROUP>` (e.g. `NISAR_ORBIT`). Off by default to keep `gdalinfo` fast. |
 | `MASK` | `YES` / `NO` | `NO` | Attach a per-band validity mask built from the product's mask layer (`GDAL_MASK_FLAGS`, `GetMaskBand()`). |
 | `DEM_FILE` | path or `/vsis3/...` URL | *(none)* | DEM used for [3-D metadata cube interpolation](#3-d-metadata-cube-interpolation). Required when `QUANTITY` is set. |
-| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when sampling the DEM. |
-| `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` when only the file is given. Must be combined with `DEM_FILE`. |
+| `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when warping the DEM onto a geocoded (L2/L3) grid. |
+| `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata or absent. |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) / `.../metadata/geolocationGrid/<QUANTITY>` (L1) when only the file is given. Must be combined with `DEM_FILE`. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
 
 Example:
@@ -333,9 +334,10 @@ utilities honour it when warping or writing alpha/NoData.
 
 ### 3-D metadata cube interpolation
 
-NISAR L2 products store geometry quantities (incidence angle, look angle, ...) as coarse 3-D
-cubes under `/metadata/radarGrid/`. The driver can interpolate one of these cubes onto the
-product's full-resolution grid, using a DEM to pick the correct height slice:
+NISAR products store geometry quantities (incidence angle, look angle, ...) as coarse 3-D
+cubes under `/metadata/radarGrid/` (L2/L3) or `/metadata/geolocationGrid/` (L1). The driver
+can interpolate one of these cubes onto the product's full-resolution grid, using a DEM to
+pick the correct height slice:
 
 ```shell
 # cube resolved from QUANTITY; output on the product's frequency-A default grid
@@ -351,12 +353,22 @@ gdal_translate \
     -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
     'NISAR:"L2_GSLC.h5":/science/LSAR/GSLC/metadata/radarGrid/incidenceAngle' \
     incidence_angle_gslc_B.tif
+
+# RSLC: output in radar coordinates (swath pixel/line grid, GCPs attached)
+gdal_translate \
+    -oo QUANTITY=incidenceAngle -oo DEM_NODATA_HEIGHT=0 \
+    -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
+    'NISAR:"L1_RSLC.h5"' incidence_angle_rslc.tif
 ```
 
-`DEM_FILE` is mandatory. The output grid is the product's imaging grid (GCOV, GSLC or GUNW,
-identified from the granule's metadata) selected by `INST`/`FREQ`/`POL`; Level 1 products are
-not supported yet. The resolved cube and reference grid are reported as `NISAR_CUBE_PATH` /
-`NISAR_REFERENCE_GRID` metadata items. The design is described in
+`DEM_FILE` is mandatory. The output grid is the product's imaging grid (GCOV, GSLC, GUNW or
+RSLC, identified from the granule's metadata) selected by `INST`/`FREQ`/`POL`. On RSLC the
+output stays in radar coordinates and carries the swath's GCPs; the terrain height of each
+(slant range, zero-Doppler time) pixel is solved by fixed-point iteration through the
+geolocation grid's `coordinateX`/`coordinateY` cubes and the DEM, with `DEM_NODATA_HEIGHT`
+used where the DEM has no value. RIFG/RUNW are not supported yet. The resolved cube and
+reference grid are reported as `NISAR_CUBE_PATH` / `NISAR_REFERENCE_GRID` metadata items.
+The design is described in
 [L2 3D Data Cube Interpolation Implementation Plan.md](<L2 3D Data Cube Interpolation Implementation Plan.md>).
 
 ### Python (`osgeo.gdal`)
