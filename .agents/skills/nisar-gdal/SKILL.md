@@ -157,9 +157,10 @@ from the product spec and must be confirmed against the subdataset list.
 - **L1 — RSLC, RIFG, RUNW**: radar geometry under `/science/<INST>/<PROD>/swaths/frequency{A,B}/…`.
   No GeoTransform; the driver attaches **GCPs** built from `metadata/geolocationGrid` (thousands
   of them — `-nogcp`). `GetGeoTransform()` deliberately fails when GCPs are present, so tools that
-  need an affine transform will complain. GCP generation reads `startingRange`/`slantRangeSpacing`
-  /`nominalAcquisitionPRF` from **`swaths/frequencyA`** regardless of the raster opened — treat
-  frequency-B L1 georeferencing with suspicion (inference from source, not observed).
+  need an affine transform will complain. GCP lines follow the spec (`(t - swaths/zeroDopplerTime[0])
+  / zeroDopplerTimeSpacing`); GCP pixels read `slantRange[0]`/`slantRangeSpacing` from
+  **`swaths/frequencyA`** regardless of the raster opened — treat frequency-B L1 georeferencing
+  with suspicion (inference from source, not observed).
   No mask dataset exists, so `MASK=YES` yields an all-valid mask.
 - **L2 — GSLC, GCOV, GUNW, GOFF**: geocoded under `/science/<INST>/<PROD>/grids/frequency{A,B}/…`,
   usually UTM (or polar stereographic). GeoTransform comes from a `GeoTransform` attribute if the

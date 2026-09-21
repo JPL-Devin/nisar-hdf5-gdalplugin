@@ -870,6 +870,25 @@ static herr_t NISAR_FindDatasetsVisitor(
     return H5_ITER_CONT;  // Continue iteration
 }
 
+// Parses "seconds since YYYY-MM-DDTHH:MM:SS[.fff]" into a Unix epoch.
+static bool ParseSecondsSinceEpoch(const std::string &sUnits, double &dfEpoch)
+{
+    int nYear, nMonth, nDay, nHour, nMin;
+    double dfSec;
+    if (sscanf(sUnits.c_str(), "seconds since %d-%d-%dT%d:%d:%lf", &nYear,
+               &nMonth, &nDay, &nHour, &nMin, &dfSec) != 6)
+        return false;
+    struct tm epoch_tm;
+    memset(&epoch_tm, 0, sizeof(epoch_tm));
+    epoch_tm.tm_year = nYear - 1900;
+    epoch_tm.tm_mon = nMonth - 1;
+    epoch_tm.tm_mday = nDay;
+    epoch_tm.tm_hour = nHour;
+    epoch_tm.tm_min = nMin;
+    dfEpoch = static_cast<double>(CPLYMDHMSToUnixTime(&epoch_tm)) + dfSec;
+    return true;
+}
+
 static bool Read1DDoubleVec(hid_t hFile, const char *pszPath,
                             std::vector<double> &vec)
 {
@@ -3522,48 +3541,42 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
     hid_t hScalarDset = -1;
     OGRSpatialReference *poCRS = nullptr;
     std::vector<GDAL_GCP> gcp_list;
-    char *pszStartTimeStr = nullptr;
 
     hid_t hEpsgDset;
     long long epsg_code = 0;
     std::vector<double> x_coords, y_coords, slant_ranges, azimuth_times;
-    double startingRange = 0.0, rangePixelSpacing = 0.0, prf = 0.0,
-           scene_start_time = 0.0;
-    double gcp_unix_time;
+    std::vector<double> swath_times;
+    double startingRange = 0.0, rangePixelSpacing = 0.0,
+           azimuthTimeSpacing = 0.0, swath_start_time = 0.0;
 
-    double time_epoch = 0.0;
+    double time_epoch = 0.0, swath_time_epoch = 0.0;
     hid_t hAzimuthTimeDset = -1;
-    std::string time_units;
-    int nEpochYear, nEpochMonth, nEpochDay, nEpochHour, nEpochMin, nEpochSec;
-    struct tm epoch_tm;
+    hid_t hSwathTimeDset = -1;
+    std::string time_units, swath_time_units;
 
     hid_t hSlantRangeDset = -1;
     hid_t hMemSpace = -1;
     hid_t hFileSpace = -1;
-    hid_t hStrType = -1;
 
     hsize_t mem_dims[1];
     hsize_t offset[1];
     hsize_t count[1];
 
-    bool bStartTimeAllocatedByHDF5 = false;
-
     // Declare all path strings here, using member variables
     // m_sInst ("LSAR" or "SSAR") was set in NisarDataset::Open()
-    std::string sStartTimePath =
-        "/science/" + m_sInst + "/identification/zeroDopplerStartTime";
-
     std::string sGridPath = "/science/" + m_sInst + "/" + pszProductGroup +
                             "/metadata/geolocationGrid";
 
-    std::string sSwathPath =
-        "/science/" + m_sInst + "/" + pszProductGroup + "/swaths/frequencyA/";
+    std::string sSwathsPath =
+        "/science/" + m_sInst + "/" + pszProductGroup + "/swaths/";
+    std::string sSwathPath = sSwathsPath + "frequencyA/";
 
     std::string sStartingRangePath = sSwathPath + "startingRange";
     std::string sSlantRangeSpacingPath = sSwathPath + "slantRangeSpacing";
-    std::string sPulseRepetitionFrequencyPath =
-        sSwathPath + "nominalAcquisitionPRF";
     std::string sSlantRangePath = sSwathPath + "slantRange";
+    // Line axis per spec: swaths/zeroDopplerTime[0] and zeroDopplerTimeSpacing
+    std::string sSwathTimePath = sSwathsPath + "zeroDopplerTime";
+    std::string sSwathTimeSpacingPath = sSwathsPath + "zeroDopplerTimeSpacing";
 
     // Open the geolocationGrid group
     hGridGroup = H5Gopen2(hHDF5, sGridPath.c_str(), H5P_DEFAULT);
@@ -3623,29 +3636,34 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
         goto cleanup;
     }
     time_units = ReadH5StringAttribute(hAzimuthTimeDset, "units");
-    //H5Dclose(hAzimuthTimeDset);
-
-    if (sscanf(time_units.c_str(), "seconds since %d-%d-%dT%d:%d:%d",
-               &nEpochYear, &nEpochMonth, &nEpochDay, &nEpochHour, &nEpochMin,
-               &nEpochSec) == 6)
-    {
-        struct tm epoch_tm;
-        memset(&epoch_tm, 0, sizeof(epoch_tm));
-        epoch_tm.tm_year = nEpochYear - 1900;
-        epoch_tm.tm_mon = nEpochMonth - 1;
-        epoch_tm.tm_mday = nEpochDay;
-        epoch_tm.tm_hour = nEpochHour;
-        epoch_tm.tm_min = nEpochMin;
-        epoch_tm.tm_sec = nEpochSec;
-        time_epoch = static_cast<double>(CPLYMDHMSToUnixTime(&epoch_tm));
-    }
-    else
+    if (!ParseSecondsSinceEpoch(time_units, time_epoch))
     {
         CPLError(CE_Failure, CPLE_AppDefined,
                  "Could not parse time epoch from units: %s",
                  time_units.c_str());
         goto cleanup;
     }
+
+    // Swath azimuth axis: first zero-Doppler time and its epoch
+    hSwathTimeDset = H5Dopen2(hHDF5, sSwathTimePath.c_str(), H5P_DEFAULT);
+    if (hSwathTimeDset < 0 ||
+        !Read1DDoubleVec(hHDF5, sSwathTimePath.c_str(), swath_times))
+    {
+        CPLError(CE_Failure, CPLE_FileIO,
+                 "Failed to read swaths/zeroDopplerTime dataset.");
+        goto cleanup;
+    }
+    swath_time_units = ReadH5StringAttribute(hSwathTimeDset, "units");
+    if (!ParseSecondsSinceEpoch(swath_time_units, swath_time_epoch))
+    {
+        CPLDebug("NISAR_DRIVER",
+                 "No parsable epoch on swaths/zeroDopplerTime (%s); "
+                 "assuming the geolocationGrid epoch.",
+                 swath_time_units.c_str());
+        swath_time_epoch = time_epoch;
+    }
+    // Swath start expressed in the geolocationGrid epoch (keeps sub-µs precision)
+    swath_start_time = swath_times[0] + (swath_time_epoch - time_epoch);
 
     // Read scalar parameters for pixel/line conversion
 
@@ -3705,104 +3723,28 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
         CPLError(CE_Failure, CPLE_FileIO, "Failed to read slantRangeSpacing.");
         goto cleanup;
     }
-    //H5Dclose(hScalarDset);
-    //hScalarDset = -1;
+    H5Dclose(hScalarDset);
+    hScalarDset = -1;
 
-    // Read processedPulseRepetitionFrequency
-    hScalarDset =
-        H5Dopen2(hHDF5, sPulseRepetitionFrequencyPath.c_str(), H5P_DEFAULT);
+    // Read zeroDopplerTimeSpacing (line spacing in seconds)
+    hScalarDset = H5Dopen2(hHDF5, sSwathTimeSpacingPath.c_str(), H5P_DEFAULT);
     if (hScalarDset < 0)
     {
         CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to open processedPulseRepetitionFrequency.");
+                 "Failed to open swaths/zeroDopplerTimeSpacing.");
         goto cleanup;
     }
     if (H5Dread(hScalarDset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                &prf) < 0)
+                &azimuthTimeSpacing) < 0 ||
+        !(azimuthTimeSpacing > 0.0))
     {
         CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to read processedPulseRepetitionFrequency.");
+                 "Failed to read a positive swaths/zeroDopplerTimeSpacing.");
         goto cleanup;
     }
-    //H5Dclose(hScalarDset);
-    //hScalarDset = -1;
-
-    // Read and parse the Scene Start Time STRING
-    hScalarDset = H5Dopen2(hHDF5, sStartTimePath.c_str(), H5P_DEFAULT);
-    if (hScalarDset >= 0)
-    {
-        hStrType = H5Dget_type(hScalarDset);
-        if (hStrType >= 0)
-        {
-            if (H5Tis_variable_str(hStrType) > 0)
-            {  // Handle variable-length
-                // NOTE: This H5Dread allocates memory that must be freed with H5free_memory
-                H5Dread(hScalarDset, hStrType, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                        &pszStartTimeStr);
-                if (pszStartTimeStr != nullptr)
-                {
-                    bStartTimeAllocatedByHDF5 = true;
-                }
-            }
-            else
-            {  //Handle fixed-length
-                size_t nSize = H5Tget_size(hStrType);
-                if (nSize > 0)
-                {
-                    // Allocate with CPLMalloc, free with CPLFree in cleanup block
-                    pszStartTimeStr = (char *)CPLMalloc(nSize + 1);
-                    if (H5Dread(hScalarDset, hStrType, H5S_ALL, H5S_ALL,
-                                H5P_DEFAULT, pszStartTimeStr) >= 0)
-                    {
-                        pszStartTimeStr[nSize] =
-                            '\0';  // Ensure null termination
-                    }
-                    else
-                    {
-                        CPLFree(pszStartTimeStr);
-                        pszStartTimeStr = nullptr;  // Reset on failure
-                    }
-                }
-            }
-            //H5Tclose(hStrType);
-        }
-        //H5Dclose(hScalarDset);
-        //hScalarDset = -1;
-    }
-
-    if (pszStartTimeStr == nullptr || pszStartTimeStr[0] == '\0')
-    {
-        CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to read a valid zeroDopplerStartTime string.");
-        goto cleanup;
-    }
-
-    int nYear, nMonth, nDay, nHour, nMin;
-    double dfSec;
-    if (sscanf(pszStartTimeStr, "%d-%d-%dT%d:%d:%lf", &nYear, &nMonth, &nDay,
-               &nHour, &nMin, &dfSec) == 6)
-    {
-        struct tm brokendown_time;
-        memset(&brokendown_time, 0,
-               sizeof(brokendown_time));  // Important: zero out the struct
-        brokendown_time.tm_year = nYear - 1900;
-        brokendown_time.tm_mon = nMonth - 1;
-        brokendown_time.tm_mday = nDay;
-        brokendown_time.tm_hour = nHour;
-        brokendown_time.tm_min = nMin;
-        scene_start_time =
-            static_cast<double>(CPLYMDHMSToUnixTime(&brokendown_time)) + dfSec;
-        CPLDebug("NISAR_DRIVER",
-                 "Parsed start time %s to %f seconds since epoch.",
-                 pszStartTimeStr, scene_start_time);
-    }
-    else
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                 "Could not parse zeroDopplerStartTime string: %s",
-                 pszStartTimeStr);
-        goto cleanup;
-    }
+    CPLDebug("NISAR_DRIVER",
+             "GCP line axis: t0=%.6f s (grid epoch), spacing=%.9g s",
+             swath_start_time, azimuthTimeSpacing);
 
     // Create the CRS from the EPSG code
     poCRS = new OGRSpatialReference();
@@ -3832,10 +3774,10 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
                 gcp.dfGCPPixel =
                     ((slant_ranges.at(j) - startingRange) / rangePixelSpacing) +
                     0.5;
-                // Convert grid azimuth time to Unix time before subtracting
-                gcp_unix_time = time_epoch + azimuth_times.at(i);
                 gcp.dfGCPLine =
-                    ((gcp_unix_time - scene_start_time) * prf) + 0.5;
+                    ((azimuth_times.at(i) - swath_start_time) /
+                     azimuthTimeSpacing) +
+                    0.5;
 
                 gcp.pszId = CPLStrdup(CPLSPrintf("%zu", gcp_list.size() + 1));
                 gcp.pszInfo = CPLStrdup("");
@@ -3859,31 +3801,22 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
 
 cleanup:
     // Clean up all resources
-    if (pszStartTimeStr)
-    {
-        if (bStartTimeAllocatedByHDF5)
-        {
-            H5free_memory(pszStartTimeStr);
-        }
-        else
-        {
-            CPLFree(pszStartTimeStr);
-        }
-    }
     if (hScalarDset >= 0)
         H5Dclose(hScalarDset);
     if (hGridGroup >= 0)
         H5Gclose(hGridGroup);
     if (hEpsgDset >= 0)
         H5Dclose(hEpsgDset);
+    if (hAzimuthTimeDset >= 0)
+        H5Dclose(hAzimuthTimeDset);
+    if (hSwathTimeDset >= 0)
+        H5Dclose(hSwathTimeDset);
     if (hSlantRangeDset >= 0)
         H5Dclose(hSlantRangeDset);
     if (hMemSpace >= 0)
         H5Sclose(hMemSpace);
     if (hFileSpace >= 0)
         H5Sclose(hFileSpace);
-    if (hStrType >= 0)
-        H5Tclose(hStrType);
     if (poCRS)
         poCRS->Release();
 

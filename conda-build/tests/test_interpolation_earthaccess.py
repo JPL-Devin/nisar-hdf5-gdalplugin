@@ -20,10 +20,9 @@ Environment overrides:
 """
 
 import os
-import re
-import subprocess
 import sys
 import tempfile
+import urllib.request
 
 import numpy as np
 import pytest
@@ -55,14 +54,23 @@ RSLC_GRID = "/science/LSAR/RSLC/metadata/geolocationGrid"
 RSLC_WINDOW = (20000, 3000, 600, 500)  # xoff, yoff, xsize, ysize in the HH swath
 
 
-def _in_us_west_2(target="s3.us-west-2.amazonaws.com", threshold_ms=1.0):
+def _in_us_west_2():
+    """True only on an EC2 instance whose IMDS reports us-west-2."""
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if region:
+        return region == "us-west-2"
     try:
-        proc = subprocess.run(
-            ["ping", "-c", "3", "-i", "0.2", target],
-            capture_output=True, text=True, timeout=5,
-        )
-        m = re.search(r"(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/", proc.stdout)
-        return proc.returncode == 0 and m is not None and float(m.group(2)) < threshold_ms
+        with open("/sys/devices/virtual/dmi/id/sys_vendor") as f:
+            if "amazon" not in f.read().lower():
+                return False
+        req = urllib.request.Request(
+            "http://169.254.169.254/latest/api/token", method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+        token = urllib.request.urlopen(req, timeout=2).read().decode()
+        req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/placement/region",
+            headers={"X-aws-ec2-metadata-token": token})
+        return urllib.request.urlopen(req, timeout=2).read().decode() == "us-west-2"
     except Exception:
         return False
 
@@ -362,6 +370,31 @@ def test_rslc_radar_grid_and_gcps(granules):
     assert all((p.GCPPixel, p.GCPLine, p.GCPX, p.GCPY, p.GCPZ) ==
                (q.GCPPixel, q.GCPLine, q.GCPX, q.GCPY, q.GCPZ)
                for p, q in zip(a[::97], b[::97]))
+
+
+def test_rslc_gcp_pixel_line_follow_spec(granules, rslc_cube):
+    """GCP pixel/line come from the swath slantRange / zeroDopplerTime axes
+    (spec: line = (t - zeroDopplerTime[0]) / zeroDopplerTimeSpacing), not PRF."""
+    (dt,) = granules.hdf5_arrays("RSLC", "/science/LSAR/RSLC/swaths/zeroDopplerTimeSpacing")
+    ref = gdal.OpenEx(granules.conn("RSLC"), gdal.OF_RASTER,
+                      open_options=["FREQ=A", "POL=HH"])
+    nt, nr = len(rslc_cube.ctime), len(rslc_cube.crange)
+    assert ref.GetGCPCount() == nt * nr
+    gcps = ref.GetGCPs()
+    line = np.array([g.GCPLine for g in gcps]).reshape(nt, nr)
+    pixel = np.array([g.GCPPixel for g in gcps]).reshape(nt, nr)
+    stime, srange = rslc_cube.stime, rslc_cube.srange
+    dr = srange[1] - srange[0]
+    exp_line = (rslc_cube.ctime - stime[0]) / float(dt) + 0.5
+    exp_pixel = (rslc_cube.crange - srange[0]) / dr + 0.5
+    assert np.allclose(line, exp_line[:, None], atol=1e-6)
+    assert np.allclose(pixel, exp_pixel[None, :], atol=1e-6)
+    # the grid brackets the swath: its extreme lines land just outside [0, nlines)
+    assert line.min() < 0.5 and line.max() > ref.RasterYSize - 0.5
+    assert line.max() < ref.RasterYSize * 1.1
+    # swath zeroDopplerTime is uniform at zeroDopplerTimeSpacing, so the last
+    # swath line maps to (nlines - 1) + 0.5 in GCP line space
+    assert np.isclose((stime[-1] - stime[0]) / float(dt), ref.RasterYSize - 1, atol=1e-6)
 
 
 @pytest.mark.parametrize("height", [-500.0, 0.0, 1234.5, 4000.0])
