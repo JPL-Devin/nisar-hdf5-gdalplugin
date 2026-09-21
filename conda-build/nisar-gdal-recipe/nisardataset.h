@@ -178,6 +178,13 @@ class NisarDataset final : public GDALPamDataset
         return hDataset;
     }
 
+    // Product identification (from /science/<INST>/identification)
+    const std::string &GetInstrument() const { return m_sInst; }
+    const std::string &GetProductType() const { return m_sProductType; }
+    bool IsLevel1() const { return m_bIsLevel1; }
+    bool IsLevel2() const { return m_bIsLevel2; }
+    bool IsLevel3() const { return m_bIsLevel3; }
+
     //virtual CPLErr GetRasterBand( int nBand, GDALRasterBand ** ppBand );
     char **GetMetadataDomainList() override;
     char **GetMetadata(const char *pszDomain = "") override;
