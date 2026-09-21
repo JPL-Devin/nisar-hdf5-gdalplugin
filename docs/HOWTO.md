@@ -497,7 +497,7 @@ gdalinfo -nogcp -oo FREQ=A -oo POL=HH NISAR:"$RSLC"      # same raster via open 
 
 Drop `-nogcp` when you actually want to examine the GCPs, for instance to check their spacing before a warp. RSLC data are complex, so the derived subdatasets of section 10 apply.
 
-GCP generation reads `startingRange`, `slantRangeSpacing` and `nominalAcquisitionPRF` from `swaths/frequencyA` regardless of which raster you opened (inference from source, not observed), so treat frequency-B L1 georeferencing with suspicion and verify it independently.
+GCP line coordinates follow the product spec, `(t - swaths/zeroDopplerTime[0]) / zeroDopplerTimeSpacing`; pixel coordinates use `slantRange[0]` and `slantRangeSpacing` from `swaths/frequencyA` regardless of which raster you opened (inference from source, not observed), so treat frequency-B L1 georeferencing with suspicion and verify it independently.
 
 There is no `mask` dataset alongside L1 rasters, so `MASK=YES` yields GDAL's all-valid mask. (Earlier drafts stated that RSLC validity is derived on the fly from acquisition start/stop vectors; the current driver does not do this.)
 
