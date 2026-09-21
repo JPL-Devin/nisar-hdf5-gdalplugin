@@ -3656,11 +3656,10 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
     swath_time_units = ReadH5StringAttribute(hSwathTimeDset, "units");
     if (!ParseSecondsSinceEpoch(swath_time_units, swath_time_epoch))
     {
-        CPLDebug("NISAR_DRIVER",
-                 "No parsable epoch on swaths/zeroDopplerTime (%s); "
-                 "assuming the geolocationGrid epoch.",
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Could not parse swath time epoch from units: %s",
                  swath_time_units.c_str());
-        swath_time_epoch = time_epoch;
+        goto cleanup;
     }
     // Swath start expressed in the geolocationGrid epoch (keeps sub-µs precision)
     swath_start_time = swath_times[0] + (swath_time_epoch - time_epoch);
