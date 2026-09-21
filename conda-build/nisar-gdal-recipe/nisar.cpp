@@ -48,7 +48,7 @@ void GDALRegister_NISAR()
     // with this driver in multi-threaded scenarios.
     poDriver->SetMetadataItem("GDAL_THREAD_SAFE", "YES");
     poDriver->SetMetadataItem("GDAL_RAW_BINARY_LAYOUT", "YES");
-    poDriver->SetMetadataItem( "DRIVER_VERSION", "v0.6.6 (Build Date: " __DATE__ " " __TIME__ ")" );
+    poDriver->SetMetadataItem( "DRIVER_VERSION", "v0.7.0 (Build Date: " __DATE__ " " __TIME__ ")" );
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME,
                                "NISAR HDF5" );
@@ -71,7 +71,7 @@ void GDALRegister_NISAR()
                                   <Value>CUBIC</Value>
                                   <Value>CUBICSPLINE</Value>
                                   </Option>
-                                  <Option name='QUANTITY' type='string' description='Quantity to interpolate'/>
+                                  <Option name='QUANTITY' type='string' description='Metadata-cube quantity to interpolate onto the imaging grid (e.g. incidenceAngle). Resolved under metadata/radarGrid (L2) when no HDF5 path is given; reference grid follows INST/FREQ/POL'/>
                                   <Option name='MASK' type='boolean' description='Apply valid data mask (default NO)'/>
                                   </OpenOptionList>)");
     poDriver->pfnOpen = NisarDataset::Open;

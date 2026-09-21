@@ -161,7 +161,7 @@ argument of `gdal.OpenEx()` in Python.
 | `MASK` | `YES` / `NO` | `NO` | Attach a per-band validity mask built from the product's mask layer (`GDAL_MASK_FLAGS`, `GetMaskBand()`). |
 | `DEM_FILE` | path or `/vsis3/...` URL | *(none)* | DEM used for [3-D metadata cube interpolation](#3-d-metadata-cube-interpolation). Required when `QUANTITY` is set. |
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when sampling the DEM. |
-| `QUANTITY` | string | *(none)* | Switches the driver into interpolation mode for the metadata cube named in the connection string. Must be combined with `DEM_FILE`. |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` when only the file is given. Must be combined with `DEM_FILE`. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
 
 Example:
@@ -338,16 +338,25 @@ cubes under `/metadata/radarGrid/`. The driver can interpolate one of these cube
 product's full-resolution grid, using a DEM to pick the correct height slice:
 
 ```shell
+# cube resolved from QUANTITY; output on the product's frequency-A default grid
 gdal_translate \
     -oo QUANTITY=incidenceAngle \
     -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
     -oo DEM_RESAMPLING=BILINEAR \
-    'NISAR:L2_GCOV.h5:/science/LSAR/GCOV/metadata/radarGrid/incidenceAngle' \
-    incidence_angle.tif
+    'NISAR:"L2_GCOV.h5"' incidence_angle.tif
+
+# explicit cube path; output on the GSLC frequency-B HV grid
+gdal_translate \
+    -oo QUANTITY=incidenceAngle -oo FREQ=B -oo POL=HV \
+    -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
+    'NISAR:"L2_GSLC.h5":/science/LSAR/GSLC/metadata/radarGrid/incidenceAngle' \
+    incidence_angle_gslc_B.tif
 ```
 
-The connection string must point at the 3-D cube dataset, and `DEM_FILE` is mandatory. The
-design is described in
+`DEM_FILE` is mandatory. The output grid is the product's imaging grid (GCOV, GSLC or GUNW,
+identified from the granule's metadata) selected by `INST`/`FREQ`/`POL`; Level 1 products are
+not supported yet. The resolved cube and reference grid are reported as `NISAR_CUBE_PATH` /
+`NISAR_REFERENCE_GRID` metadata items. The design is described in
 [L2 3D Data Cube Interpolation Implementation Plan.md](<L2 3D Data Cube Interpolation Implementation Plan.md>).
 
 ### Python (`osgeo.gdal`)
@@ -392,6 +401,7 @@ Test assets live in `conda-build/tests/`:
 | `Testing_NISAR_GCOV_GSLC.md` | Description of the test suite above and how to interpret its output. |
 | `verify_hdf5_ros3.py <aws-profile> <s3://.../file.h5>` | Stand-alone diagnostic that checks whether an `h5py` build can read HDF5 files from S3 (useful when comparing against the driver, or debugging credentials). |
 | `Verify_HDF5_ROS3.md` | Usage notes for the script above. |
+| `test_interpolation_earthaccess.py` | `pytest` suite for metadata-cube interpolation (GCOV regression, GSLC, auto-resolved vs explicit cube, `FREQ`/`POL`, L1 rejection). Locates the granules with `earthaccess` (Earthdata `~/.netrc`) and reads them over HTTPS, or over S3 when run in `us-west-2`; set `NISAR_TEST_DATA_DIR` to use local copies. |
 
 The conda recipe also runs `gdalinfo --formats | grep NISAR` as its package test.
 

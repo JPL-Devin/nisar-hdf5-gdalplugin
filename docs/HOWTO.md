@@ -8,7 +8,7 @@ Prepared for NISAR science data users
 
 21 September 2026
 
-Reflects `gdal-driver-nisar` version 0.6.6 (built against GDAL 3.12). Behaviour statements have been checked against the driver source, the repository README and the `nisar-gdal` skill document; anything that could not be re-verified is marked *observed* or *historical*.
+Reflects `gdal-driver-nisar` version 0.7.0 (built against GDAL 3.12). Behaviour statements have been checked against the driver source, the repository README and the `nisar-gdal` skill document; anything that could not be re-verified is marked *observed* or *historical*.
 
 # Contents
 
@@ -76,7 +76,7 @@ The variables hold bare paths, without the `NISAR:` prefix, so the same variable
 
 ## 1.2 What is verified and what is not
 
-This edition was redrafted against the driver source for version 0.6.6, the repository `README.md` and the `nisar-gdal` skill document. Three kinds of statement appear, and the guide tries to keep them apart:
+This edition was redrafted against the driver source for version 0.7.0, the repository `README.md` and the `nisar-gdal` skill document. Three kinds of statement appear, and the guide tries to keep them apart:
 
 - **Verified in source.** How the connection string is parsed, which open options exist and what they do, how georeferencing, masks, statistics and derived subdatasets are produced. These are stated plainly.
 - ***Observed.*** Behaviour seen on a specific granule with a specific driver build (timings, memory figures, a warning printed on one product). Marked as such; not re-run for this edition.
@@ -90,7 +90,7 @@ HDF5 layer names inside a product (for example the exact spelling of a GUNW laye
 
 ## 2.1 Installing the driver
 
-The driver ships as a conda package that places the plugin shared library into `$CONDA_PREFIX/lib/gdalplugins`, the directory GDAL scans for plugins. The package is pinned to the GDAL minor version it was built against (3.12 for 0.6.6) and pulls in compatible `gdal`, `libgdal-core` and `hdf5` packages. Supported platforms are Linux x86_64, Linux aarch64 and macOS arm64; Windows is not supported.
+The driver ships as a conda package that places the plugin shared library into `$CONDA_PREFIX/lib/gdalplugins`, the directory GDAL scans for plugins. The package is pinned to the GDAL minor version it was built against (3.12 for 0.7.0) and pulls in compatible `gdal`, `libgdal-core` and `hdf5` packages. Supported platforms are Linux x86_64, Linux aarch64 and macOS arm64; Windows is not supported.
 
 To create a dedicated environment, which is the recommended approach:
 
@@ -110,7 +110,7 @@ If conda refuses to solve, the GDAL already in that environment is almost certai
 Pin an exact version in any processing pipeline whose outputs you intend to compare over time:
 
 ```
-mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.6.6
+mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.0
 ```
 
 Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `conda-build/nisar-gdal-recipe/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
@@ -163,7 +163,7 @@ The third check asks the driver to report its own version and build date, and al
 gdalinfo --format NISAR
 ```
 
-Look for a `DRIVER_VERSION` entry of the form `v0.6.6 (Build Date: ...)`.
+Look for a `DRIVER_VERSION` entry of the form `v0.7.0 (Build Date: ...)`.
 
 # 3. Data access paths and credentials
 
@@ -466,9 +466,9 @@ Open options are passed as `-oo KEY=VALUE` and may be repeated; every GDAL utili
 | `POL` | product-dependent, see 6.2 | `HHHH` for GCOV, `HH` otherwise | Polarization or covariance term. Validated against the granule's `listOfCovarianceTerms` / `listOfPolarizations`. Setting any of `INST`, `FREQ`, `POL` opens that single raster instead of the container. |
 | `METADATA` | `ALL` or a comma list of `ATTITUDE`, `CALIBRATIONINFORMATION`, `CEOSANALYSISREADYDATA`, `ORBIT`, `PROCESSINGINFORMATION`, `RADARGRID`, `SOURCEDATA` | none | Loads the named `/metadata/<group>` trees into `NISAR_<GROUP>` metadata domains. Pair with `gdalinfo -mdd`. |
 | `MASK` | `YES`, `NO` | `NO` | Expose the product validity mask as the GDAL mask band. See section 9. |
-| `DEM_FILE` | path or `/vsis3/...` URL | none | DEM for 3-D metadata cube interpolation. Required when `QUANTITY` is set; has no effect otherwise. |
+| `DEM_FILE` | path, `/vsis3/...` or `/vsicurl/...` URL | none | DEM for 3-D metadata cube interpolation. Required when `QUANTITY` is set; has no effect otherwise. |
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling used when warping the DEM onto the target grid. |
-| `QUANTITY` | any string | none | Its *presence* routes the open to the cube-interpolation dataset (section 7.6). The value itself is not used to locate the cube; the connection string must point at it. |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | none | Its presence routes the open to the cube-interpolation dataset (section 7.6). With a bare `NISAR:"file.h5"` the cube is resolved to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>`; an explicit HDF5 path in the connection string overrides it. The reference grid follows `INST`/`FREQ`/`POL`. |
 | `ENABLE_PAGE_BUFFERING` | `YES`, `NO` | `NO` | Reserved. The driver always uses a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 There are **no `LAYER` or `MEASURE` options**. Earlier drafts of this guide described them; they do not exist in the driver. GUNW, GOFF, RIFG and RUNW layers are addressed by full HDF5 path (section 7.4).
@@ -512,7 +512,7 @@ gdalinfo -oo FREQ=A -oo POL=HH NISAR:"$GSLC"
 
 Because the pixels are complex, the derived subdatasets described in section 10 are particularly useful here: they let you get amplitude, phase or intensity without writing any code.
 
-One current limitation: metadata cube interpolation (section 7.6) hard-codes the GCOV and GUNW reference grids. If a cube interpolation command works on GCOV but fails on GSLC with "Unsupported product type", this is why; it is a driver gap rather than a mistake on your part.
+One current limitation: metadata cube interpolation (section 7.6) supports the geocoded GCOV, GSLC and GUNW reference grids only. On a Level 1 granule (RSLC, RIFG, RUNW) it fails with "Level-1 product ... is not supported yet (radar coordinates)"; it is a driver gap rather than a mistake on your part.
 
 ## 7.3 GCOV (Level 2)
 
@@ -607,18 +607,25 @@ One cosmetic issue: the cube's dataset metadata is reported for every band, so t
 Selecting a single height level is rarely what you actually want. The physically correct operation is to interpolate the cube in three dimensions, horizontally onto the imaging grid and vertically using the terrain height at each pixel, so that the result lands on the same grid as the imagery. The driver implements this when `QUANTITY` and `DEM_FILE` are both given:
 
 ```
+# Cube resolved from QUANTITY; reference grid is the product's frequency-A default layer
 gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=ZSTD \
   -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" -oo DEM_RESAMPLING=CUBICSPLINE \
-  NISAR:"$GCOV":/science/LSAR/GCOV/metadata/radarGrid/incidenceAngle \
-  incidence_angle.tif
+  NISAR:"$GCOV" incidence_angle.tif
+
+# Same, on the GSLC frequency-B HV grid, with the cube path spelled out
+gdal_translate -oo QUANTITY=incidenceAngle -oo FREQ=B -oo POL=HV -oo DEM_FILE="$DEM" \
+  NISAR:"$GSLC":/science/LSAR/GSLC/metadata/radarGrid/incidenceAngle \
+  incidence_angle_gslc_B.tif
 ```
 
-What happens, from the source (v0.6.6):
+What happens, from the source (v0.7.0):
 
 1. The presence of `QUANTITY` routes the open to the interpolation dataset. If `DEM_FILE` is missing the open fails with "DEM_FILE open option is REQUIRED when QUANTITY is specified."
-2. The **cube** is whatever dataset the connection string points at. The `QUANTITY` value is not used to locate it, so pass the cube path explicitly.
-3. The **target grid** is chosen by substring match on the connection string: a string containing `GCOV` uses `/science/LSAR/GCOV/grids/frequencyA/HHHH`; one containing `GUNW` uses `/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/unwrappedPhase`; anything else fails with "Unsupported product type. Cannot determine reference grid." LSAR, frequency A and those two layers are hard-coded, so GSLC, SSAR, frequency B and Level 1 are not supported.
-4. The DEM is warped onto the target grid with `DEM_RESAMPLING`, the whole cube is loaded into memory, and each output pixel is interpolated in height. The output is a single-band Float32 raster with the target grid's georeferencing, 512×512 blocks, and NaN where the DEM or cube has no value.
+2. The **cube** is the dataset the connection string points at. If the connection string is a bare `NISAR:"file.h5"`, the driver reads the product identification and resolves the cube to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>`; a missing quantity fails with "Failed to open valid 3D coarse metadata cube at ...".
+3. The **target grid** is chosen from the product type recorded in the granule (not from the file name), honouring `INST`, `FREQ` and `POL`: GCOV and GSLC use `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `POL` is `HHHH` for GCOV and `HH` for GSLC); GUNW uses `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`). Level 1 products fail with "Level-1 product ... is not supported yet (radar coordinates)".
+4. The DEM is exposed as a lazily-warped view on the target grid using `DEM_RESAMPLING` (blocks are resampled on demand, so a full-resolution GSLC grid does not pin a grid-sized DEM in memory); the whole cube is loaded into memory, and each output pixel is interpolated in height. The output is a single-band Float32 raster with the target grid's georeferencing, 512×512 blocks, and NaN where the cube has no value. Pixels outside the DEM's coverage take height 0.
+
+The output carries `NISAR_PRODUCT_TYPE`, `NISAR_CUBE_PATH`, `NISAR_REFERENCE_GRID` and `NISAR_QUANTITY` metadata items recording what was resolved, so `gdalinfo` on the result (or on the interpolated open itself) shows which grid and cube were used.
 
 A global public DEM VRT is available in both S3 and HTTPS form (*observed*); its resolution need not match NISAR posting, which is why `DEM_RESAMPLING` exists:
 
@@ -886,7 +893,8 @@ Read in chunk-aligned windows rather than calling `ReadAsArray()` on a whole rem
 | `The HDF5 dataset '...' does not exist` | The path (typed or constructed from `FREQ`/`POL`) is not in this granule. List the container and copy the path; for GUNW/GOFF/RIFG/RUNW use the full path, not open options. |
 | `Invalid INST open option`, `Invalid FREQ open option`, `Invalid POL open option: '...'` | Check `INST` (`LSAR`/`SSAR`), `FREQ` (`A`/`B`) and `POL` against the granule's `listOfPolarizations` / `listOfCovarianceTerms`. |
 | `DEM_FILE open option is REQUIRED when QUANTITY is specified` | Interpolation mode needs both `QUANTITY` and `DEM_FILE`. |
-| `Unsupported product type. Cannot determine reference grid.` | Cube interpolation is hard-coded for GCOV and GUNW connection strings (LSAR, frequency A). |
+| `Interpolation: Level-1 product RSLC is not supported yet (radar coordinates).` | Cube interpolation currently supports the geocoded GCOV, GSLC and GUNW grids only. |
+| `Failed to open valid 3D coarse metadata cube at ...` | The `QUANTITY` (or explicit cube path) does not exist in the granule; list `.../metadata/radarGrid` for the available cubes. |
 | Pixel size near 1, origin near 0 | No GeoTransform was found for this dataset. For L1 that is expected (use the GCPs); for L2/L3 check the driver version and the path. |
 | Warped output is a tiny square in the wrong place | Same cause as above; you warped a raster with an identity GeoTransform. |
 | Statistics look implausible or identical with and without `MASK` | `-stats`/`-approx_stats` returned producer attributes or synthesised values (section 5.4). Translate to GeoTIFF and compute there. |
@@ -898,7 +906,7 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 
 # 14. Version history and behaviour changes
 
-Because several releases changed output rather than only fixing crashes, knowing your version is part of knowing your data. The entries for versions before 0.6.6 are taken from release announcements and field notes and have not been re-verified; the row for 0.6.6 summarises what this edition verified in source.
+Because several releases changed output rather than only fixing crashes, knowing your version is part of knowing your data. The entries for versions before 0.6.6 are taken from release announcements and field notes and have not been re-verified; the rows for 0.6.6 and 0.7.0 summarise what was verified in source.
 
 | Version | Change | Affects results |
 | --- | --- | --- |
@@ -909,7 +917,8 @@ Because several releases changed output rather than only fixing crashes, knowing
 | 0.1.8 | Radar-grid metadata cubes interpreted as multi-band rasters with a correct GeoTransform; band selection with `-b`. | yes |
 | 0.1.9 | `DRIVER_VERSION` with build date reported via `gdalinfo --format NISAR`. | no |
 | 0.3.0 | Path quoting and slash handling reworked. Mask no longer applied by default. Remote reads through HDF5's ROS3 driver with AWS-style credential sourcing. | yes |
-| 0.6.6 (current) | Built against GDAL 3.12. All remote I/O routed through GDAL VSI via a custom HDF5 Virtual File Layer (ROS3 no longer used; standard GDAL `AWS_*` configuration applies). Open options registered in `DMD_OPENOPTIONLIST`; `DEM_RESAMPLING` added; no `LAYER`/`MEASURE` options. Chunk-aligned mega-fetch reads with `NISAR_PREFETCH_GRID` / `NISAR_MAX_MEGAFETCH_BYTES`, virtual overviews, attribute-based statistics, GUNW-specific mask decoding, optional Kerchunk sidecar. | yes (statistics, masks) |
+| 0.7.0 (current) | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. Level 1 interpolation still rejected. | yes (GSLC interpolation) |
+| 0.6.6 | Built against GDAL 3.12. All remote I/O routed through GDAL VSI via a custom HDF5 Virtual File Layer (ROS3 no longer used; standard GDAL `AWS_*` configuration applies). Open options registered in `DMD_OPENOPTIONLIST`; `DEM_RESAMPLING` added; no `LAYER`/`MEASURE` options. Chunk-aligned mega-fetch reads with `NISAR_PREFETCH_GRID` / `NISAR_MAX_MEGAFETCH_BYTES`, virtual overviews, attribute-based statistics, GUNW-specific mask decoding, optional Kerchunk sidecar. | yes (statistics, masks) |
 
 # 15. Verification checklist
 
@@ -923,7 +932,7 @@ Before you use driver output for anything quantitative, work through this list. 
 - For NEB and other calibration-grid rasters, verify the GeoTransform specifically. Different corners from the principal grid are expected; a one-unit pixel size is not.
 - For phase, offsets and connected components, confirm your resampling is nearest neighbour and that NaN nodata is set on both sides of the warp.
 - Do not quote `gdalinfo -stats` / `-approx_stats` mean and standard deviation unless the dataset carries `mean_value` / `sample_stddev` attributes; they may be synthesised from min and max.
-- For metadata cubes, decide whether you want a single height band or a DEM-interpolated raster. They are not interchangeable, and interpolation is GCOV and GUNW only.
+- For metadata cubes, decide whether you want a single height band or a DEM-interpolated raster. They are not interchangeable, and interpolation is GCOV, GSLC and GUNW only (no Level 1 yet).
 - For L1 frequency-B rasters, verify GCP geolocation independently.
 - For SME2, verify CRS and GeoTransform before overlaying; it is the least exercised product.
 

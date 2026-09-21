@@ -10,7 +10,7 @@ description: Read NISAR HDF5 products (RSLC, RIFG, RUNW, GSLC, GCOV, GUNW, GOFF,
 plugin directory (`$CONDA_PREFIX/lib/gdalplugins/gdal_NISAR.so` / `.dylib`). It is not a Python
 package — there is nothing to import; use the GDAL CLI or `osgeo.gdal`.
 
-This document describes driver **v0.6.6 built against GDAL 3.12**. Anything marked *historical*
+This document describes driver **v0.7.0 built against GDAL 3.12**. Anything marked *historical*
 or *observed* comes from earlier release notes or field notes and has not been re-verified against
 the current source. When in doubt, the driver's own output (`gdalinfo`, `CPL_DEBUG`) wins.
 
@@ -75,7 +75,7 @@ matched case-insensitively by GDAL; the canonical spelling is upper case.
 | `MASK` | `YES` / `NO` (default `NO`) | Expose the product validity mask as the GDAL mask band. |
 | `DEM_FILE` | path or `/vsi…` URL | DEM for 3D metadata-cube interpolation. Required with `QUANTITY`. |
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto the target grid. |
-| `QUANTITY` | any string | Presence of this option routes the open to the cube-interpolation dataset (see below). |
+| `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>`. |
 | `ENABLE_PAGE_BUFFERING` | boolean, default `NO` | Reserved. The driver always sets a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 **There are no `LAYER` or `MEASURE` options.** GUNW/GOFF/RUNW/RIFG layers must be addressed by
@@ -187,25 +187,32 @@ from the product spec and must be confirmed against the subdataset list.
 ## 3D cube interpolation (`QUANTITY` + `DEM_FILE`)
 
 ```bash
+# cube resolved from QUANTITY, reference grid = product default layer (frequency A)
 gdal_translate -co TILED=YES -co BLOCKXSIZE=512 -co BLOCKYSIZE=512 -co COMPRESS=ZSTD \
   -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" -oo DEM_RESAMPLING=CUBICSPLINE \
-  NISAR:"$GCOV":/science/LSAR/GCOV/metadata/radarGrid/incidenceAngle inc.tif
+  NISAR:"$GCOV" inc.tif
+# explicit cube path + GSLC frequency-B HV grid
+gdal_translate -oo QUANTITY=incidenceAngle -oo FREQ=B -oo POL=HV -oo DEM_FILE="$DEM" \
+  NISAR:"$GSLC":/science/LSAR/GSLC/metadata/radarGrid/incidenceAngle inc_gslc_B.tif
 ```
 
-What the driver does (v0.6.6):
+What the driver does (v0.7.0):
 
 1. `QUANTITY` present → open is routed to the interpolation dataset. `DEM_FILE` missing → hard
    error "DEM_FILE open option is REQUIRED when QUANTITY is specified."
-2. The **cube** is whatever dataset the connection string points at (the `QUANTITY` value itself is
-   not used to locate it — pass the cube path explicitly).
-3. The **target grid** is chosen by substring match on the connection string: `GCOV` →
-   `/science/LSAR/GCOV/grids/frequencyA/HHHH`; `GUNW` →
-   `/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/unwrappedPhase`; anything else
-   fails ("Unsupported product type for interpolation"). LSAR / frequency A / those polarizations
-   are hard-coded — GSLC, SSAR, frequency B and L1 are not supported.
-4. The DEM is warped to the target grid with `DEM_RESAMPLING`, the whole cube is loaded into RAM,
-   and each output pixel is interpolated in height. Output is a single-band **Float32** raster with
-   the target grid's georeferencing, 512×512 blocks, NaN where the DEM or cube is missing.
+2. The **cube** is the dataset the connection string points at; with a bare `NISAR:"file.h5"` it is
+   resolved to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` from the granule's
+   identification metadata ("Failed to open valid 3D coarse metadata cube at …" if absent).
+3. The **target grid** is chosen from the product type in the granule, honouring `INST`/`FREQ`/`POL`:
+   GCOV, GSLC → `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `HHHH` / `HH`);
+   GUNW → `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`).
+   L1 (RSLC/RIFG/RUNW) fails with "Level-1 product … is not supported yet (radar coordinates)".
+4. The DEM is a lazily-warped VRT on the target grid (`DEM_RESAMPLING`; blocks resampled on demand,
+   so memory is bounded on GSLC-sized grids); the whole cube is loaded into RAM and each output
+   pixel is interpolated in height. Output is a single-band **Float32** raster with the target grid's
+   georeferencing, 512×512 blocks, NaN where the cube is missing, height 0 outside DEM coverage.
+5. The result carries `NISAR_PRODUCT_TYPE`, `NISAR_CUBE_PATH`, `NISAR_REFERENCE_GRID` and
+   `NISAR_QUANTITY` metadata items recording what was resolved.
 
 Public DEM (observed): `/vsis3/sds-n-cumulus-prod-nisar-products/DEM/v1.2/EPSG4326/EPSG4326.vrt`
 (also over HTTPS from the ASF DAAC). Its resolution need not match NISAR posting.
@@ -328,14 +335,14 @@ h5py/xarray with a whole-layer page buffer. Build workflows around block-wise re
 
 ```bash
 mamba create -n nisar-env -c nisar-forge -c conda-forge gdal-driver-nisar && conda activate nisar-env
-mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.6.6     # pin in pipelines
+mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.0     # pin in pipelines
 ```
 
 Verify from the binary, not just `conda list`:
 
 ```bash
 gdalinfo --formats | grep NISAR    # "NISAR -raster- (ro…): NISAR HDF5"
-gdalinfo --format NISAR            # DRIVER_VERSION "v0.6.6 (Build Date: …)" + open option list
+gdalinfo --format NISAR            # DRIVER_VERSION "v0.7.0 (Build Date: …)" + open option list
 gdalinfo --version                 # a broken plugin errors on every GDAL invocation
 ```
 
@@ -343,7 +350,7 @@ Gotchas:
 
 - A conda update can report success while leaving the old `gdal_NISAR.so` in place (*observed*).
   If `DRIVER_VERSION` has not moved, `conda remove gdal-driver-nisar` then install again.
-- The plugin is built against a pinned GDAL (`3.12` for 0.6.6). Mixing it with another GDAL
+- The plugin is built against a pinned GDAL (`3.12` for 0.7.0). Mixing it with another GDAL
   produces load errors or a missing `NISAR` entry in `--formats`.
 - `GLIBC_2.38 not found` means the Linux binary is newer than the host libc (older JupyterHub
   images) — needs a rebuild, not configuration.
@@ -365,7 +372,7 @@ Gotchas:
 - Do not quote `gdalinfo -stats`/`-approx_stats` mean/stddev unless the dataset has
   `mean_value`/`sample_stddev` attributes — they may be synthesised from min/max.
 - Metadata cubes: decide between a single height band and a DEM-interpolated raster; not
-  interchangeable. Interpolation is LSAR/frequency-A GCOV and GUNW only.
+  interchangeable. Interpolation is GCOV, GSLC and GUNW only (no L1 yet).
 - L1 frequency-B rasters: verify GCP geolocation independently.
 
 ## How to talk about this
