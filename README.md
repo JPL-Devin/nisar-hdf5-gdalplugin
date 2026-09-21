@@ -106,6 +106,9 @@ Building the plugin and the conda package (natively on macOS, or for `linux-64` 
 
 ## Quick Start
 
+A longer, task-oriented walkthrough (installation, credentials, per-product
+recipes, warping, masking, performance tuning) is in [docs/HOWTO.md](docs/HOWTO.md).
+
 ```shell
 # 1. List the subdatasets (rasters) in a local product
 gdalinfo NISAR:/path/to/NISAR_L2_GCOV_file.h5
@@ -412,6 +415,7 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 .
 ├── README.md                      This file
 ├── BUILDING.md                    Building the plugin / conda package (macOS native, Linux via Docker)
+├── docs/HOWTO.md                  Reading NISAR Products with GDAL: task-oriented user guide
 ├── Level_1_Product_Processing.md  How GCPs are derived for L1 products
 ├── L2 3D Data Cube Interpolation Implementation Plan.md
 ├── Dockerfile                     Multi-arch (x86_64 / arm64) AlmaLinux conda-build image
