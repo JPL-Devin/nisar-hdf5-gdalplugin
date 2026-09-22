@@ -47,7 +47,7 @@ test:
 about:
   home: https://github.com/ozzp/nisar-hdf5-gdalplugin
   license: Apache-2.0
-  license_file: LICENSE
+  license_file: ../../LICENSE
   summary: 'A GDAL plugin to read NISAR HDF5 files.'
   description: | 
     A high-performance C++ GDAL plugin providing ROS3/S3 streaming capabilities 
