@@ -8,6 +8,7 @@
 #include "nisarinterpolatedrasterband.h"
 #include "nisardataset.h"
 #include "gdalwarper.h"
+#include "gdal_utils.h"
 #include "vrtdataset.h"
 #include "cpl_time.h"
 
@@ -145,6 +146,7 @@ NisarInterpolatedDataset::~NisarInterpolatedDataset()
 {
     // Clean up the DEM datasets when this dataset is closed
     if (m_poAlignedDEM && m_poAlignedDEM != m_poRawDEM) GDALClose(m_poAlignedDEM);
+    if (m_poDEMValidityView) GDALClose(m_poDEMValidityView);
     if (m_poRawDEM) GDALClose(m_poRawDEM);
     if (m_pasGCPs) {
         GDALDeinitGCPs(m_nGCPCount, m_pasGCPs);
@@ -306,16 +308,54 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
         CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: DEM has no spatial reference.");
         return false;
     }
+    // Source validity: an explicit alpha band (any type), else band 1's GDAL mask band
+    // (per-dataset mask, Byte alpha, or nodata-derived; all-valid when none of those).
+    GDALRasterBand* poRawBand = m_poRawDEM->GetRasterBand(1);
+    int nAlphaBand = 0;
+    for (int i = 1; i <= m_poRawDEM->GetRasterCount(); ++i) {
+        if (m_poRawDEM->GetRasterBand(i)->GetColorInterpretation() == GCI_AlphaBand) {
+            nAlphaBand = i;
+            break;
+        }
+    }
+    int bRawHasNoData = FALSE;
+    const double dfRawNoData = poRawBand->GetNoDataValue(&bRawHasNoData);
     if (poDEMSRS->IsSame(&m_oGCPSRS)) {
         m_poAlignedDEM = m_poRawDEM;
+        const int nMaskFlags = poRawBand->GetMaskFlags();
+        if (nAlphaBand > 0)
+            m_poDEMMaskBand = m_poRawDEM->GetRasterBand(nAlphaBand);
+        else if ((nMaskFlags & GMF_ALL_VALID) == 0 && nMaskFlags != GMF_NODATA)
+            m_poDEMMaskBand = poRawBand->GetMaskBand();
     } else {
+        // Warp [height, validity] with validity as source alpha so masked cells (also those
+        // combined with nodata, which the warper alone would ignore) end up as dst alpha 0.
+        const char* apszTranslate[] = {"-of", "VRT", "-b", "1", "-b",
+                                       nAlphaBand > 0 ? CPLSPrintf("%d", nAlphaBand) : "mask",
+                                       nullptr};
+        GDALTranslateOptions* psTO =
+            GDALTranslateOptionsNew(const_cast<char**>(apszTranslate), nullptr);
+        m_poDEMValidityView =
+            GDALDataset::FromHandle(GDALTranslate("", m_poRawDEM, psTO, nullptr));
+        GDALTranslateOptionsFree(psTO);
+        if (m_poDEMValidityView == nullptr) {
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "Interpolation: failed to build the DEM validity view.");
+            return false;
+        }
+        GDALWarpOptions* psWO = GDALCreateWarpOptions();
+        GDALWarpInitDefaultBandMapping(psWO, 1);
+        psWO->nSrcAlphaBand = 2;
+        psWO->nDstAlphaBand = 2;
+        if (bRawHasNoData) {
+            GDALWarpInitNoDataReal(psWO, dfRawNoData);
+            psWO->papszWarpOptions =
+                CSLSetNameValue(psWO->papszWarpOptions, "INIT_DEST", "NO_DATA");
+        }
         char* pszWKT = nullptr;
         m_oGCPSRS.exportToWkt(&pszWKT);
-        // Destination alpha carries source nodata/mask validity through the warp.
-        GDALWarpOptions* psWO = GDALCreateWarpOptions();
-        psWO->nDstAlphaBand = m_poRawDEM->GetRasterCount() + 1;
-        m_poAlignedDEM = GDALDataset::FromHandle(
-            GDALAutoCreateWarpedVRT(m_poRawDEM, nullptr, pszWKT, GRA_Bilinear, 0.0, psWO));
+        m_poAlignedDEM = GDALDataset::FromHandle(GDALAutoCreateWarpedVRT(
+            m_poDEMValidityView, nullptr, pszWKT, GRA_Bilinear, 0.0, psWO));
         GDALDestroyWarpOptions(psWO);
         CPLFree(pszWKT);
         if (m_poAlignedDEM == nullptr) {
@@ -323,6 +363,7 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
                      static_cast<int>(epsg[0]));
             return false;
         }
+        m_poDEMMaskBand = m_poAlignedDEM->GetRasterBand(2);
     }
     if (GDALGetGeoTransform(m_poAlignedDEM, m_adfDEMGeoTransform) != CE_None) {
         CPLError(CE_Failure, CPLE_AppDefined,
@@ -334,18 +375,8 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
         return false;
     }
     int bHasNoData = FALSE;
-    GDALRasterBand* poDEMBand = m_poAlignedDEM->GetRasterBand(1);
-    m_dfDEMNoData = poDEMBand->GetNoDataValue(&bHasNoData);
+    m_dfDEMNoData = m_poAlignedDEM->GetRasterBand(1)->GetNoDataValue(&bHasNoData);
     m_bDEMHasNoData = bHasNoData != FALSE;
-    // Validity band read alongside the DEM: the warp's alpha band, or a per-dataset/alpha
-    // mask of the raw DEM (nodata-only masks are already covered by value).
-    if (m_poAlignedDEM != m_poRawDEM) {
-        m_poDEMMaskBand = m_poAlignedDEM->GetRasterBand(m_poAlignedDEM->GetRasterCount());
-    } else {
-        const int nMaskFlags = poDEMBand->GetMaskFlags();
-        if ((nMaskFlags & GMF_ALL_VALID) == 0 && nMaskFlags != GMF_NODATA)
-            m_poDEMMaskBand = poDEMBand->GetMaskBand();
-    }
     m_bRadarGrid = true;
     return true;
 }

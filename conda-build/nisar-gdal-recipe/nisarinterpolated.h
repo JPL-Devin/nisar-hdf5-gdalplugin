@@ -39,6 +39,7 @@ class NisarInterpolatedDataset final : public GDALDataset
 private:
     GDALDataset* m_poRawDEM = nullptr;
     GDALDataset* m_poAlignedDEM = nullptr; // L2: warped VRT on target grid; L1: DEM in cube CRS
+    GDALDataset* m_poDEMValidityView = nullptr; // L1 warp source: VRT [height, validity]
 
     // Coarse 3D Cube Data
     std::vector<float> m_cubeData;

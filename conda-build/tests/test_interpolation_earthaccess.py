@@ -308,9 +308,12 @@ class RslcCube:
                     c += cube[zi + dz, yi + dy, xi + dx] * fz * fy * fx
         return c
 
-    def constant_dem(self, path, value, nodata=None, mask=None, geotransform=True, epsg=4326):
+    def constant_dem(
+        self, path, value, nodata=None, mask=None, alpha=None, geotransform=True, epsg=4326
+    ):
         """Flat GeoTIFF covering the geolocation-grid footprint (lon/lat bbox +-1 deg,
-        projected to `epsg`). mask: fill value (0/255) for an internal per-dataset mask band."""
+        projected to `epsg`). mask: fill value (0/255) for an internal per-dataset mask band;
+        alpha: fill value (0/255) for an explicit second (alpha) band."""
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(epsg)
         srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -324,13 +327,18 @@ class RslcCube:
         x0, x1 = pts[:, 0].min(), pts[:, 0].max()
         y0, y1 = pts[:, 1].min(), pts[:, 1].max()
         with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
-            ds = gdal.GetDriverByName("GTiff").Create(path, 64, 64, 1, gdal.GDT_Float32)
+            ds = gdal.GetDriverByName("GTiff").Create(
+                path, 64, 64, 2 if alpha is not None else 1, gdal.GDT_Float32
+            )
             if geotransform:
                 ds.SetGeoTransform([x0, (x1 - x0) / 64, 0, y1, 0, -(y1 - y0) / 64])
             ds.SetProjection(srs.ExportToWkt())
             ds.GetRasterBand(1).Fill(value)
             if nodata is not None:
                 ds.GetRasterBand(1).SetNoDataValue(nodata)
+            if alpha is not None:
+                ds.GetRasterBand(2).SetColorInterpretation(gdal.GCI_AlphaBand)
+                ds.GetRasterBand(2).Fill(alpha)
             if mask is not None:
                 ds.CreateMaskBand(gdal.GMF_PER_DATASET)
                 ds.GetRasterBand(1).GetMaskBand().Fill(mask)
@@ -480,6 +488,21 @@ def test_rslc_dem_mask_survives_reprojection(granules, rslc_cube, tmp_dir):
     # sanity: the reprojected DEM itself is used when valid (bilinear warp of a constant)
     assert np.allclose(_read_rslc(granules, dem=unmasked), _read_rslc(granules, dem=flat1k),
                        atol=2e-5)
+
+
+@pytest.mark.parametrize("epsg", [4326, 3857])
+@pytest.mark.parametrize("kind", ["alpha", "nodata+mask", "nodata+alpha"])
+def test_rslc_dem_validity_combinations(granules, rslc_cube, tmp_dir, kind, epsg):
+    """Explicit alpha bands, and per-dataset masks / alpha combined with a nodata value,
+    must hide valid-looking heights in both the same-CRS and the warped path."""
+    kw = {"alpha": 0} if "alpha" in kind else {"mask": 0}
+    if kind.startswith("nodata"):
+        kw["nodata"] = -9999.0
+    hidden = rslc_cube.constant_dem(os.path.join(tmp_dir, f"dem_{kind}_{epsg}.tif"), 1000.0,
+                                    epsg=epsg, **kw)
+    flat20 = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_20v.tif"), 20.0)
+    assert np.array_equal(_read_rslc(granules, dem=hidden, DEM_NODATA_HEIGHT=20),
+                          _read_rslc(granules, dem=flat20))
 
 
 def test_rslc_real_dem_self_consistent(granules, rslc_cube):
