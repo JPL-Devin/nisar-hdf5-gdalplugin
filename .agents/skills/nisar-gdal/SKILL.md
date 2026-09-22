@@ -75,7 +75,7 @@ matched case-insensitively by GDAL; the canonical spelling is upper case.
 | `MASK` | `YES` / `NO` (default `NO`) | Expose the product validity mask as the GDAL mask band. |
 | `DEM_FILE` | path or `/vsi…` URL | DEM for 3D metadata-cube interpolation. Required with `QUANTITY`. |
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto a geocoded (L2/L3) target grid; unused on L1. |
-| `DEM_NODATA_HEIGHT` | metres, default `0` | L1 interpolation only: height assumed where the DEM is nodata / absent (ocean). |
+| `DEM_NODATA_HEIGHT` | metres, default `0` | L1 interpolation only: height assumed where the DEM is nodata / masked / absent (ocean). Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>` (L2/L3) or `metadata/geolocationGrid/<QUANTITY>` (L1). |
 | `ENABLE_PAGE_BUFFERING` | boolean, default `NO` | Reserved. The driver always sets a 4 MiB HDF5 page buffer; this option has no other effect today. |
 

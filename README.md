@@ -161,7 +161,7 @@ argument of `gdal.OpenEx()` in Python.
 | `MASK` | `YES` / `NO` | `NO` | Attach a per-band validity mask built from the product's mask layer (`GDAL_MASK_FLAGS`, `GetMaskBand()`). |
 | `DEM_FILE` | path or `/vsis3/...` URL | *(none)* | DEM used for [3-D metadata cube interpolation](#3-d-metadata-cube-interpolation). Required when `QUANTITY` is set. |
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when warping the DEM onto a geocoded (L2/L3) grid. |
-| `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata or absent. |
+| `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata, masked or absent. Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) / `.../metadata/geolocationGrid/<QUANTITY>` (L1) when only the file is given. Must be combined with `DEM_FILE`. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
 

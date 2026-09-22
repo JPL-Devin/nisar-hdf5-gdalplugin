@@ -308,19 +308,25 @@ class RslcCube:
                     c += cube[zi + dz, yi + dy, xi + dx] * fz * fy * fx
         return c
 
-    def constant_dem(self, path, value, nodata=None):
-        """Flat EPSG:4326 GeoTIFF covering the geolocation-grid footprint."""
-        ds = gdal.GetDriverByName("GTiff").Create(path, 64, 64, 1, gdal.GDT_Float32)
-        x0, x1 = self.cX.min() - 1, self.cX.max() + 1
-        y0, y1 = self.cY.min() - 1, self.cY.max() + 1
-        ds.SetGeoTransform([x0, (x1 - x0) / 64, 0, y1, 0, -(y1 - y0) / 64])
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(4326)
-        ds.SetProjection(srs.ExportToWkt())
-        ds.GetRasterBand(1).Fill(value)
-        if nodata is not None:
-            ds.GetRasterBand(1).SetNoDataValue(nodata)
-        ds = None
+    def constant_dem(self, path, value, nodata=None, mask=None, geotransform=True):
+        """Flat EPSG:4326 GeoTIFF covering the geolocation-grid footprint.
+        mask: fill value (0/255) for an internal per-dataset mask band."""
+        with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
+            ds = gdal.GetDriverByName("GTiff").Create(path, 64, 64, 1, gdal.GDT_Float32)
+            x0, x1 = self.cX.min() - 1, self.cX.max() + 1
+            y0, y1 = self.cY.min() - 1, self.cY.max() + 1
+            if geotransform:
+                ds.SetGeoTransform([x0, (x1 - x0) / 64, 0, y1, 0, -(y1 - y0) / 64])
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(4326)
+            ds.SetProjection(srs.ExportToWkt())
+            ds.GetRasterBand(1).Fill(value)
+            if nodata is not None:
+                ds.GetRasterBand(1).SetNoDataValue(nodata)
+            if mask is not None:
+                ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+                ds.GetRasterBand(1).GetMaskBand().Fill(mask)
+            ds = None
         return path
 
 
@@ -422,6 +428,35 @@ def test_rslc_dem_nodata_height_default_and_override(granules, rslc_cube, tmp_di
     over = _read_rslc(granules, dem=nodata, DEM_NODATA_HEIGHT=1000)
     assert np.array_equal(over, _read_rslc(granules, dem=flat1k))
     assert np.abs(over - _read_rslc(granules, dem=flat0)).max() > 0.01
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
+def test_rslc_dem_nodata_height_must_be_finite(granules, bad):
+    with pytest.raises(RuntimeError, match="DEM_NODATA_HEIGHT must be a finite height"):
+        _read_rslc(granules, DEM_NODATA_HEIGHT=bad)
+
+
+def test_rslc_dem_without_geotransform_rejected(granules, rslc_cube, tmp_dir):
+    dem = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_nogt.tif"), 0.0, geotransform=False)
+    assert gdal.Open(dem).GetGeoTransform(can_return_null=True) is None
+    with pytest.raises(RuntimeError, match="DEM has no affine geotransform"):
+        _read_rslc(granules, dem=dem)
+
+
+def test_rslc_dem_mask_band_honoured(granules, rslc_cube, tmp_dir):
+    """A per-dataset mask (no nodata value) must hide DEM samples like nodata does."""
+    masked = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_masked.tif"), 1000.0, mask=0)
+    unmasked = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_unmasked.tif"), 1000.0, mask=255)
+    flat0 = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_0b.tif"), 0.0)
+    flat1k = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_1kb.tif"), 1000.0)
+    ds = gdal.Open(masked)
+    band = ds.GetRasterBand(1)
+    assert band.GetNoDataValue() is None and band.GetMaskFlags() == gdal.GMF_PER_DATASET
+    ds = None
+    assert np.array_equal(_read_rslc(granules, dem=masked), _read_rslc(granules, dem=flat0))
+    assert np.array_equal(_read_rslc(granules, dem=masked, DEM_NODATA_HEIGHT=1000),
+                          _read_rslc(granules, dem=flat1k))
+    assert np.array_equal(_read_rslc(granules, dem=unmasked), _read_rslc(granules, dem=flat1k))
 
 
 def test_rslc_real_dem_self_consistent(granules, rslc_cube):

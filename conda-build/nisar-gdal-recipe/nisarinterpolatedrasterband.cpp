@@ -207,6 +207,7 @@ struct DEMWindow
 {
     int nX0 = 0, nY0 = 0, nXSize = 0, nYSize = 0;
     std::vector<float> data;
+    std::vector<GByte> mask;  // empty when the DEM has no mask band to honour
 };
 }  // namespace
 
@@ -259,10 +260,12 @@ CPLErr NisarInterpolatedRasterBand::ReadRadarBlock(int nBlockXOff, int nBlockYOf
     const int nDEMX = poGDS->m_poAlignedDEM->GetRasterXSize();
     const int nDEMY = poGDS->m_poAlignedDEM->GetRasterYSize();
     const double dfNoDataHeight = poGDS->m_dfNoDataHeight;
-    auto isNoData = [&](float v) {
-        return std::isnan(v) || (poGDS->m_bDEMHasNoData && v == static_cast<float>(poGDS->m_dfDEMNoData));
-    };
     DEMWindow win;
+    auto isNoData = [&](size_t i) {
+        const float v = win.data[i];
+        return std::isnan(v) || (poGDS->m_bDEMHasNoData && v == static_cast<float>(poGDS->m_dfDEMNoData)) ||
+               (!win.mask.empty() && win.mask[i] == 0);
+    };
     double hlo = dfNoDataHeight, hhi = dfNoDataHeight;
     for (int nPass = 0; nPass < 3; ++nPass) {
         double minX, maxX, minY, maxY;
@@ -288,20 +291,33 @@ CPLErr NisarInterpolatedRasterBand::ReadRadarBlock(int nBlockXOff, int nBlockYOf
                      "use a coarser DEM.", win.nXSize, win.nYSize, nBlockXOff, nBlockYOff);
             return CE_Failure;
         }
-        win.data.assign(static_cast<size_t>(win.nXSize) * win.nYSize, 0.0f);
-        if (poGDS->m_poAlignedDEM->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
-                                            win.data.data(), win.nXSize, win.nYSize, GDT_Float32,
-                                            1, nullptr, 0, 0, 0, nullptr) != CE_None) {
+        const size_t nWin = static_cast<size_t>(win.nXSize) * win.nYSize;
+        win.data.assign(nWin, 0.0f);
+        GDALRasterBand* poDEMBand = poGDS->m_poAlignedDEM->GetRasterBand(1);
+        if (poDEMBand->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
+                                win.data.data(), win.nXSize, win.nYSize, GDT_Float32,
+                                0, 0, nullptr) != CE_None) {
             CPLError(CE_Failure, CPLE_AppDefined,
                      "NISAR Interpolation: Failed to read DEM window for block (%d,%d).",
                      nBlockXOff, nBlockYOff);
             return CE_Failure;
         }
+        if (poGDS->m_bDEMHasMask) {
+            win.mask.assign(nWin, 0);
+            if (poDEMBand->GetMaskBand()->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
+                                                   win.mask.data(), win.nXSize, win.nYSize, GDT_Byte,
+                                                   0, 0, nullptr) != CE_None) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                         "NISAR Interpolation: Failed to read DEM mask window for block (%d,%d).",
+                         nBlockXOff, nBlockYOff);
+                return CE_Failure;
+            }
+        }
         double dfMin = dfNoDataHeight, dfMax = dfNoDataHeight;
-        for (float v : win.data) {
-            if (isNoData(v)) continue;
-            dfMin = std::min(dfMin, static_cast<double>(v));
-            dfMax = std::max(dfMax, static_cast<double>(v));
+        for (size_t i = 0; i < nWin; ++i) {
+            if (isNoData(i)) continue;
+            dfMin = std::min(dfMin, static_cast<double>(win.data[i]));
+            dfMax = std::max(dfMax, static_cast<double>(win.data[i]));
         }
         if (dfMin >= hlo && dfMax <= hhi) break;
         hlo = std::min(hlo, dfMin);
@@ -316,12 +332,11 @@ CPLErr NisarInterpolatedRasterBand::ReadRadarBlock(int nBlockXOff, int nBlockYOf
         if (!(u >= 0.0 && v >= 0.0 && u <= win.nXSize - 1 && v <= win.nYSize - 1)) return dfNoDataHeight;
         const int i0 = static_cast<int>(u), j0 = static_cast<int>(v);
         const int i1 = std::min(i0 + 1, win.nXSize - 1), j1 = std::min(j0 + 1, win.nYSize - 1);
-        const float a = win.data[static_cast<size_t>(j0) * win.nXSize + i0];
-        const float b = win.data[static_cast<size_t>(j0) * win.nXSize + i1];
-        const float c = win.data[static_cast<size_t>(j1) * win.nXSize + i0];
-        const float d = win.data[static_cast<size_t>(j1) * win.nXSize + i1];
-        if (isNoData(a) || isNoData(b) || isNoData(c) || isNoData(d)) return dfNoDataHeight;
+        const size_t ia = static_cast<size_t>(j0) * win.nXSize + i0, ib = static_cast<size_t>(j0) * win.nXSize + i1;
+        const size_t ic = static_cast<size_t>(j1) * win.nXSize + i0, id = static_cast<size_t>(j1) * win.nXSize + i1;
+        if (isNoData(ia) || isNoData(ib) || isNoData(ic) || isNoData(id)) return dfNoDataHeight;
         const double fu = u - i0, fv = v - j0;
+        const float a = win.data[ia], b = win.data[ib], c = win.data[ic], d = win.data[id];
         return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv;
     };
 
