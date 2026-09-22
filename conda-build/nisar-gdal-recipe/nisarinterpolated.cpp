@@ -238,10 +238,78 @@ void NisarInterpolatedDataset::CubeZ(double dfHeight, int& z0, int& z1, double& 
     wz = dfSpan > 0 ? (dfHeight - m_zVect[z0]) / dfSpan : 0.0;
 }
 
+// Raw-DEM pixel window covering the coordinateX/Y footprint (padded 5%), clamped to the DEM.
+bool NisarInterpolatedDataset::DEMWindowForFootprint(const OGRSpatialReference* poDEMSRS,
+                                                     int& nX, int& nY, int& nW, int& nH) const
+{
+    double dfMinX = HUGE_VAL, dfMaxX = -HUGE_VAL, dfMinY = HUGE_VAL, dfMaxY = -HUGE_VAL;
+    for (size_t i = 0; i < m_coordX.size(); ++i) {
+        if (!std::isfinite(m_coordX[i]) || !std::isfinite(m_coordY[i])) continue;
+        dfMinX = std::min(dfMinX, m_coordX[i]); dfMaxX = std::max(dfMaxX, m_coordX[i]);
+        dfMinY = std::min(dfMinY, m_coordY[i]); dfMaxY = std::max(dfMaxY, m_coordY[i]);
+    }
+    if (dfMinX > dfMaxX || dfMinY > dfMaxY) {
+        CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: coordinateX/Y cubes are all invalid.");
+        return false;
+    }
+    const double dfPadX = 0.05 * (dfMaxX - dfMinX), dfPadY = 0.05 * (dfMaxY - dfMinY);
+    dfMinX -= dfPadX; dfMaxX += dfPadX; dfMinY -= dfPadY; dfMaxY += dfPadY;
+
+    OGRSpatialReference oDEMSRS(*poDEMSRS);
+    oDEMSRS.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    OGRCoordinateTransformation* poCT = OGRCreateCoordinateTransformation(&m_oGCPSRS, &oDEMSRS);
+    if (poCT == nullptr) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: cannot transform the geolocation grid CRS to the DEM CRS.");
+        return false;
+    }
+    // Densified footprint boundary -> bbox in DEM CRS.
+    const int nSteps = 32;
+    std::vector<double> adfX, adfY;
+    for (int i = 0; i <= nSteps; ++i) {
+        const double f = static_cast<double>(i) / nSteps;
+        adfX.push_back(dfMinX + f * (dfMaxX - dfMinX)); adfY.push_back(dfMinY);
+        adfX.push_back(dfMinX + f * (dfMaxX - dfMinX)); adfY.push_back(dfMaxY);
+        adfX.push_back(dfMinX); adfY.push_back(dfMinY + f * (dfMaxY - dfMinY));
+        adfX.push_back(dfMaxX); adfY.push_back(dfMinY + f * (dfMaxY - dfMinY));
+    }
+    std::vector<int> abSuccess(adfX.size(), FALSE);
+    poCT->Transform(static_cast<int>(adfX.size()), adfX.data(), adfY.data(), nullptr,
+                    abSuccess.data());
+    OGRCoordinateTransformation::DestroyCT(poCT);
+
+    double adfGT[6], adfInv[6];
+    if (GDALGetGeoTransform(m_poRawDEM, adfGT) != CE_None || !GDALInvGeoTransform(adfGT, adfInv)) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: DEM has no affine geotransform (GCP/RPC-only DEMs are not supported).");
+        return false;
+    }
+    double dfMinP = HUGE_VAL, dfMaxP = -HUGE_VAL, dfMinL = HUGE_VAL, dfMaxL = -HUGE_VAL;
+    for (size_t i = 0; i < adfX.size(); ++i) {
+        if (!abSuccess[i] || !std::isfinite(adfX[i]) || !std::isfinite(adfY[i])) continue;
+        const double p = adfInv[0] + adfInv[1] * adfX[i] + adfInv[2] * adfY[i];
+        const double l = adfInv[3] + adfInv[4] * adfX[i] + adfInv[5] * adfY[i];
+        dfMinP = std::min(dfMinP, p); dfMaxP = std::max(dfMaxP, p);
+        dfMinL = std::min(dfMinL, l); dfMaxL = std::max(dfMaxL, l);
+    }
+    const int nDEMX = m_poRawDEM->GetRasterXSize(), nDEMY = m_poRawDEM->GetRasterYSize();
+    if (dfMinP > dfMaxP || dfMinL > dfMaxL ||
+        dfMaxP < 0 || dfMaxL < 0 || dfMinP > nDEMX || dfMinL > nDEMY) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: DEM does not cover the geolocation grid footprint.");
+        return false;
+    }
+    nX = std::max(0, static_cast<int>(std::floor(dfMinP)) - 1);
+    nY = std::max(0, static_cast<int>(std::floor(dfMinL)) - 1);
+    nW = std::min(nDEMX, static_cast<int>(std::ceil(dfMaxP)) + 1) - nX;
+    nH = std::min(nDEMY, static_cast<int>(std::ceil(dfMaxL)) + 1) - nY;
+    return nW > 0 && nH > 0;
+}
+
 // Load the Level-1 radar axes, coordinateX/Y cubes, GCPs and prepare the DEM in cube CRS.
 bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset* poSwath,
                                              const std::string& sCubeGroup,
-                                             const std::string& sSwathGroup)
+                                             const std::string& sRefPath)
 {
     const hid_t hFile = poCube->GetHDF5Handle();
     std::vector<hsize_t> dimsX, dimsY;
@@ -268,10 +336,18 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
         return false;
     }
 
-    // Swath axes: slantRange per column, zeroDopplerTime per line (may use another epoch).
-    const std::string sSwathsRoot = sSwathGroup.substr(0, sSwathGroup.rfind('/'));
-    if (!NisarReadDoubles(hFile, sSwathGroup + "/slantRange", m_swathRange) ||
-        !NisarReadDoubles(hFile, sSwathsRoot + "/zeroDopplerTime", m_swathTime))
+    // Swath axes: slantRange per column, zeroDopplerTime per line (may use another epoch),
+    // from the nearest ancestor groups of the reference raster that hold them.
+    const std::string sRangeGroup = NisarFindGroupUpward(hFile, sRefPath, {"slantRange"});
+    const std::string sTimeGroup = NisarFindGroupUpward(hFile, sRefPath, {"zeroDopplerTime"});
+    if (sRangeGroup.empty() || sTimeGroup.empty()) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: no slantRange/zeroDopplerTime axes above %s.", sRefPath.c_str());
+        return false;
+    }
+    const std::string sSwathTimePath = sTimeGroup + "/zeroDopplerTime";
+    if (!NisarReadDoubles(hFile, sRangeGroup + "/slantRange", m_swathRange) ||
+        !NisarReadDoubles(hFile, sSwathTimePath, m_swathTime))
         return false;
     if (static_cast<int>(m_swathRange.size()) != nRasterXSize ||
         static_cast<int>(m_swathTime.size()) != nRasterYSize) {
@@ -283,7 +359,7 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
     }
     double dfCubeEpoch = 0.0, dfSwathEpoch = 0.0;
     if (NisarParseEpoch(NisarReadStringAttr(hFile, sCubeGroup + "/zeroDopplerTime", "units"), dfCubeEpoch) &&
-        NisarParseEpoch(NisarReadStringAttr(hFile, sSwathsRoot + "/zeroDopplerTime", "units"), dfSwathEpoch) &&
+        NisarParseEpoch(NisarReadStringAttr(hFile, sSwathTimePath, "units"), dfSwathEpoch) &&
         dfCubeEpoch != dfSwathEpoch) {
         for (auto& t : m_swathTime) t += dfSwathEpoch - dfCubeEpoch;
     }
@@ -328,10 +404,17 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
         else if ((nMaskFlags & GMF_ALL_VALID) == 0 && nMaskFlags != GMF_NODATA)
             m_poDEMMaskBand = poRawBand->GetMaskBand();
     } else {
+        // Restrict the warp to the DEM window covering the (padded) geolocation-grid
+        // footprint: warping a global DEM into a projected CRS gives a bogus extent/resolution.
+        int nWinX = 0, nWinY = 0, nWinW = 0, nWinH = 0;
+        if (!DEMWindowForFootprint(poDEMSRS, nWinX, nWinY, nWinW, nWinH)) return false;
         // Warp [height, validity] with validity as source alpha so masked cells (also those
         // combined with nodata, which the warper alone would ignore) end up as dst alpha 0.
-        const char* apszTranslate[] = {"-of", "VRT", "-b", "1", "-b",
-                                       nAlphaBand > 0 ? CPLSPrintf("%d", nAlphaBand) : "mask",
+        const std::string sValidity = nAlphaBand > 0 ? std::to_string(nAlphaBand) : "mask";
+        const std::string sX = std::to_string(nWinX), sY = std::to_string(nWinY),
+                          sW = std::to_string(nWinW), sH = std::to_string(nWinH);
+        const char* apszTranslate[] = {"-of", "VRT", "-b", "1", "-b", sValidity.c_str(),
+                                       "-srcwin", sX.c_str(), sY.c_str(), sW.c_str(), sH.c_str(),
                                        nullptr};
         GDALTranslateOptions* psTO =
             GDALTranslateOptionsNew(const_cast<char**>(apszTranslate), nullptr);
@@ -469,9 +552,17 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
                    "/unwrappedInterferogram/" + sPol + "/unwrappedPhase";
         poTargetGridDS = NisarOpenInternal(sQuotedFile + ":" + sRefDesc, nullptr);
     }
+    else if (EQUAL(sProduct.c_str(), "RIFG") || EQUAL(sProduct.c_str(), "RUNW")) {
+        // L1 interferogram grid: swaths/frequency<F>/interferogram/<POL>/<layer>
+        if (sPol.empty()) sPol = "HH";
+        sRefDesc = "/science/" + sInst + "/" + sProduct + "/swaths/frequency" + sFreq +
+                   "/interferogram/" + sPol + "/" +
+                   (EQUAL(sProduct.c_str(), "RIFG") ? "wrappedInterferogram" : "unwrappedPhase");
+        poTargetGridDS = NisarOpenInternal(sQuotedFile + ":" + sRefDesc, nullptr);
+    }
     else if (bIsLevel1) {
         CPLError(CE_Failure, CPLE_NotSupported,
-                 "Interpolation: Level-1 product %s is not supported yet (only RSLC swaths).",
+                 "Interpolation: Level-1 product %s is not supported (only RSLC, RIFG, RUNW).",
                  sProduct.c_str());
         GDALClose(poCoarseCubeDS);
         return nullptr;
@@ -566,8 +657,7 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
             delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
         }
         const std::string sCubeGroup = sCubePath.substr(0, sCubePath.rfind('/'));
-        const std::string sSwathGroup = sRefPath.substr(0, sRefPath.rfind('/'));
-        if (!poDS->InitRadarGrid(poCoarseCubeDS, poTargetGridDS, sCubeGroup, sSwathGroup)) {
+        if (!poDS->InitRadarGrid(poCoarseCubeDS, poTargetGridDS, sCubeGroup, sRefPath)) {
             delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
         }
         poDS->SetMetadataItem("NISAR_GRID_TYPE", "RADAR");

@@ -359,14 +359,24 @@ gdal_translate \
     -oo QUANTITY=incidenceAngle -oo DEM_NODATA_HEIGHT=0 \
     -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
     'NISAR:"L1_RSLC.h5"' incidence_angle_rslc.tif
+
+# RUNW: output on the multilooked interferogram/HH/unwrappedPhase grid
+gdal_translate \
+    -oo QUANTITY=incidenceAngle \
+    -oo DEM_FILE=/vsis3/my-dem-bucket/copernicus_glo30_epsg4326.vrt \
+    'NISAR:"L1_RUNW.h5"' incidence_angle_runw.tif
 ```
 
-`DEM_FILE` is mandatory. The output grid is the product's imaging grid (GCOV, GSLC, GUNW or
-RSLC, identified from the granule's metadata) selected by `INST`/`FREQ`/`POL`. On RSLC the
-output stays in radar coordinates and carries the swath's GCPs; the terrain height of each
-(slant range, zero-Doppler time) pixel is solved by fixed-point iteration through the
-geolocation grid's `coordinateX`/`coordinateY` cubes and the DEM, with `DEM_NODATA_HEIGHT`
-used where the DEM has no value. RIFG/RUNW are not supported yet. The resolved cube and
+`DEM_FILE` is mandatory. The output grid is the product's imaging grid (GCOV, GSLC, GUNW,
+RSLC, RIFG or RUNW, identified from the granule's metadata) selected by `INST`/`FREQ`/`POL`.
+On Level-1 products the output stays in radar coordinates and carries the grid's GCPs; the
+terrain height of each (slant range, zero-Doppler time) pixel is solved by fixed-point
+iteration through the geolocation grid's `coordinateX`/`coordinateY` cubes and the DEM, with
+`DEM_NODATA_HEIGHT` used where the DEM has no value. RSLC uses the `frequency<F>/<POL>` swath;
+RIFG and RUNW use the multilooked `frequency<F>/interferogram/<POL>/wrappedInterferogram` /
+`.../unwrappedPhase` grid (`POL` defaults to `HH`) with the radar axes stored next to it. When
+the DEM CRS differs from the geolocation grid's (e.g. an EPSG:4326 DEM with a UTM RIFG/RUNW
+grid), only the DEM window covering the grid footprint is reprojected. The resolved cube and
 reference grid are reported as `NISAR_CUBE_PATH` / `NISAR_REFERENCE_GRID` metadata items.
 The design is described in
 [L2 3D Data Cube Interpolation Implementation Plan.md](<L2 3D Data Cube Interpolation Implementation Plan.md>).

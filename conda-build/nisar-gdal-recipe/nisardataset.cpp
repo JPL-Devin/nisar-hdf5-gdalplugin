@@ -2749,7 +2749,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     }
 
     if (poDS->m_bIsLevel1) {
-        poDS->GenerateGCPsFromGeolocationGrid(poDS->m_sProductType.c_str());
+        poDS->GenerateGCPsFromGeolocationGrid(poDS->m_sProductType.c_str(), pathToOpen);
     }
 
     if (poDS->nBands == 0) {
@@ -3531,8 +3531,41 @@ cleanup:
     return bSuccess;
 }
 
+std::string NisarFindGroupUpward(hid_t hFile, const std::string &sPath,
+                                 const std::vector<const char *> &apszNames)
+{
+    H5E_auto2_t old_func; void *old_client_data;
+    H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
+    H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+    std::string sGroup = sPath;
+    for (;;)
+    {
+        const size_t nSlash = sGroup.rfind('/');
+        if (nSlash == std::string::npos || nSlash == 0)
+        {
+            sGroup.clear();
+            break;
+        }
+        sGroup.resize(nSlash);
+        bool bAll = true;
+        for (const char *pszName : apszNames)
+        {
+            if (H5Lexists(hFile, (sGroup + "/" + pszName).c_str(), H5P_DEFAULT) <= 0)
+            {
+                bAll = false;
+                break;
+            }
+        }
+        if (bAll)
+            break;
+    }
+    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);
+    return sGroup;
+}
+
 CPLErr
-NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
+NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
+                                              const char *pszRasterPath)
 {
     // DECLARE ALL VARIABLES AT THE TOP
     CPLErr eErr = CE_Failure;
@@ -3567,16 +3600,26 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
     std::string sGridPath = "/science/" + m_sInst + "/" + pszProductGroup +
                             "/metadata/geolocationGrid";
 
-    std::string sSwathsPath =
-        "/science/" + m_sInst + "/" + pszProductGroup + "/swaths/";
-    std::string sSwathPath = sSwathsPath + "frequencyA/";
+    // Radar axes of the raster: nearest ancestor groups holding slantRange(+Spacing) and
+    // zeroDopplerTime(+Spacing). RSLC: frequency<F> / swaths; RIFG, RUNW: the layer group
+    // (interferogram, pixelOffsets). Datasets outside such groups (e.g. cubes) get no GCPs.
+    const std::string sRasterPath = pszRasterPath ? pszRasterPath : "";
+    const std::string sRangeGroup = NisarFindGroupUpward(
+        hHDF5, sRasterPath, {"slantRange", "slantRangeSpacing"});
+    const std::string sTimeGroup = NisarFindGroupUpward(
+        hHDF5, sRasterPath, {"zeroDopplerTime", "zeroDopplerTimeSpacing"});
+    if (sRangeGroup.empty() || sTimeGroup.empty())
+    {
+        CPLDebug("NISAR_DRIVER", "No radar axes above '%s'; skipping GCPs.",
+                 sRasterPath.c_str());
+        return CE_None;
+    }
 
-    std::string sStartingRangePath = sSwathPath + "startingRange";
-    std::string sSlantRangeSpacingPath = sSwathPath + "slantRangeSpacing";
-    std::string sSlantRangePath = sSwathPath + "slantRange";
-    // Line axis per spec: swaths/zeroDopplerTime[0] and zeroDopplerTimeSpacing
-    std::string sSwathTimePath = sSwathsPath + "zeroDopplerTime";
-    std::string sSwathTimeSpacingPath = sSwathsPath + "zeroDopplerTimeSpacing";
+    std::string sSlantRangeSpacingPath = sRangeGroup + "/slantRangeSpacing";
+    std::string sSlantRangePath = sRangeGroup + "/slantRange";
+    // Line axis per spec: zeroDopplerTime[0] and zeroDopplerTimeSpacing
+    std::string sSwathTimePath = sTimeGroup + "/zeroDopplerTime";
+    std::string sSwathTimeSpacingPath = sTimeGroup + "/zeroDopplerTimeSpacing";
 
     // Open the geolocationGrid group
     hGridGroup = H5Gopen2(hHDF5, sGridPath.c_str(), H5P_DEFAULT);
@@ -3649,8 +3692,8 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
     if (hSwathTimeDset < 0 ||
         !Read1DDoubleVec(hHDF5, sSwathTimePath.c_str(), swath_times))
     {
-        CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to read swaths/zeroDopplerTime dataset.");
+        CPLError(CE_Failure, CPLE_FileIO, "Failed to read %s dataset.",
+                 sSwathTimePath.c_str());
         goto cleanup;
     }
     swath_time_units = ReadH5StringAttribute(hSwathTimeDset, "units");
@@ -3729,16 +3772,16 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup)
     hScalarDset = H5Dopen2(hHDF5, sSwathTimeSpacingPath.c_str(), H5P_DEFAULT);
     if (hScalarDset < 0)
     {
-        CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to open swaths/zeroDopplerTimeSpacing.");
+        CPLError(CE_Failure, CPLE_FileIO, "Failed to open %s.",
+                 sSwathTimeSpacingPath.c_str());
         goto cleanup;
     }
     if (H5Dread(hScalarDset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                 &azimuthTimeSpacing) < 0 ||
         !(azimuthTimeSpacing > 0.0))
     {
-        CPLError(CE_Failure, CPLE_FileIO,
-                 "Failed to read a positive swaths/zeroDopplerTimeSpacing.");
+        CPLError(CE_Failure, CPLE_FileIO, "Failed to read a positive %s.",
+                 sSwathTimeSpacingPath.c_str());
         goto cleanup;
     }
     CPLDebug("NISAR_DRIVER",
