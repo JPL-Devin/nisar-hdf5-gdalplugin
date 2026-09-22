@@ -53,8 +53,8 @@ export PATH=~/nisar-env/bin:$PATH GDAL_DRIVER_PATH=~/build:~/nisar-env/lib/gdalp
 Development build (fast, incremental; produces `~/build/gdal_NISAR.so`):
 
 ```bash
-cmake -S conda-build/nisar-gdal-recipe -B ~/build -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_PREFIX_PATH=~/nisar-env -DCMAKE_INSTALL_PREFIX=~/nisar-env
+cmake -S conda-build/nisar-gdal-recipe -B "$HOME/build" -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="$HOME/nisar-env" -DCMAKE_INSTALL_PREFIX="$HOME/nisar-env"
 cmake --build ~/build -j$(nproc)
 gdalinfo --formats | grep NISAR      # must print:  NISAR -raster- (rovs): NISAR HDF5 (*.h5)
 gdalinfo --format NISAR              # DRIVER_VERSION + open-option list
