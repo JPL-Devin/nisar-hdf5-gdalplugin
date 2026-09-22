@@ -67,7 +67,7 @@ private:
     double m_adfDEMGeoTransform[6] = {0, 1, 0, 0, 0, 1};
     double m_adfDEMInvGeoTransform[6] = {0, 1, 0, 0, 0, 1};
     bool m_bDEMHasNoData = false;
-    bool m_bDEMHasMask = false;         // per-dataset/alpha mask band to honour
+    GDALRasterBand* m_poDEMMaskBand = nullptr; // validity band of m_poAlignedDEM (0 = invalid), if any
     double m_dfDEMNoData = 0.0;
     double m_dfNoDataHeight = 0.0;      // DEM_NODATA_HEIGHT
     int m_nMaxIter = 10;
