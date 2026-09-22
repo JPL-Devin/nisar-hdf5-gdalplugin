@@ -44,8 +44,8 @@ If `~/nisar-env` is missing, recreate it:
 ```bash
 micromamba create -y -p ~/nisar-env -c conda-forge python=3.12 gdal=3.12 libgdal-core \
     libgdal-hdf5 hdf5 zlib-ng cmake make cxx-compiler numpy earthaccess pytest
-export PATH=~/nisar-env/bin:$PATH GDAL_DRIVER_PATH=~/build:~/nisar-env/lib/gdalplugins \
-       PROJ_DATA=~/nisar-env/share/proj
+export PATH="$HOME/nisar-env/bin:$PATH" GDAL_DRIVER_PATH="$HOME/build:$HOME/nisar-env/lib/gdalplugins" \
+       PROJ_DATA="$HOME/nisar-env/share/proj"
 ```
 
 ## Build
@@ -55,11 +55,13 @@ Development build (fast, incremental; produces `~/build/gdal_NISAR.so`):
 ```bash
 cmake -S conda-build/nisar-gdal-recipe -B "$HOME/build" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH="$HOME/nisar-env" -DCMAKE_INSTALL_PREFIX="$HOME/nisar-env"
-cmake --build ~/build -j$(nproc)
+cmake --build "$HOME/build" -j$(nproc)
 gdalinfo --formats | grep NISAR      # must print:  NISAR -raster- (rovs): NISAR HDF5 (*.h5)
 gdalinfo --format NISAR              # DRIVER_VERSION + open-option list
 ```
 
+Use `$HOME` rather than `~` inside `-D...=` arguments: the shell does not tilde-expand there,
+and a literal `~/nisar-env` in `CMAKE_PREFIX_PATH` is silently ignored.
 `~/build` is outside the repo on purpose; never commit build output. Release packages are
 produced with `conda build` (natively on macOS, via the root `Dockerfile` for Linux) — see
 BUILDING.md; do not change `meta.yaml` / `conda_build_config.yaml` pins casually.
