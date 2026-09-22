@@ -3600,9 +3600,8 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
     std::string sGridPath = "/science/" + m_sInst + "/" + pszProductGroup +
                             "/metadata/geolocationGrid";
 
-    // Radar axes of the raster: nearest ancestor groups holding slantRange(+Spacing) and
-    // zeroDopplerTime(+Spacing). RSLC: frequency<F> / swaths; RIFG, RUNW: the layer group
-    // (interferogram, pixelOffsets). Datasets outside such groups (e.g. cubes) get no GCPs.
+    // Radar axes from the nearest ancestor groups holding slantRange(+Spacing) / zeroDopplerTime
+    // (+Spacing): RSLC frequency<F> + swaths, RIFG/RUNW the layer group. None (e.g. cubes) -> no GCPs.
     const std::string sRasterPath = pszRasterPath ? pszRasterPath : "";
     const std::string sRangeGroup = NisarFindGroupUpward(
         hHDF5, sRasterPath, {"slantRange", "slantRangeSpacing"});
