@@ -50,6 +50,10 @@
 
 class NisarRasterBand;
 
+// Nearest ancestor group of sPath (its parent first) holding every named member; "" if none.
+std::string NisarFindGroupUpward(hid_t hFile, const std::string &sPath,
+                                 const std::vector<const char *> &apszNames);
+
 // DEBUGGING: PRINT GDAL VERSION VALUES
 // This uses a helper macro to convert numbers to strings for printing
 //#define STR_HELPER(x) #x
@@ -191,7 +195,8 @@ class NisarDataset final : public GDALPamDataset
     const OGRSpatialReference *GetSpatialRef() const override;
 
     //const OGRSpatialReference *GetSpatialRef() const override;
-    CPLErr GenerateGCPsFromGeolocationGrid(const char *pszProductGroup);
+    CPLErr GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
+                                           const char *pszRasterPath);
     char **GetFileList() override;
 };
 #endif  //NISAR_DATASET_H

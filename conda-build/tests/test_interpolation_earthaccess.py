@@ -13,6 +13,8 @@ Run with pytest (or directly with `python test_interpolation_earthaccess.py`):
 Environment overrides:
     NISAR_TEST_GRANULE   granule ID stem shared by the RSLC/GCOV/GSLC triple
                          (default: a 2025-11-09 DHDH acquisition, ~1 GB each)
+    NISAR_TEST_IFG_GRANULE  granule ID stem shared by the RIFG/RUNW pair
+                         (default: a 2025-10-17/29 SH pair, 190 MB + 40 MB)
     NISAR_TEST_DATA_DIR  directory with local copies of the granules; when the
                          files exist there they are used instead of remote reads
     NISAR_TEST_DEM       DEM path/URL (default: public EPSG4326.vrt over HTTPS)
@@ -39,6 +41,10 @@ gdal.UseExceptions()
 DEFAULT_STEM = (
     "004_159_A_024_2005_DHDH_A_20251109T051646_20251109T051650_X05010_N_P_J_001"
 )
+DEFAULT_IFG_STEM = (
+    "003_005_D_074_004_4000_SH_20251017T132342_20251017T132345_"
+    "20251029T132342_20251029T132346_X05010_N_P_J_001"
+)
 DEFAULT_DEM = (
     "/vsicurl/https://nisar.asf.earthdatacloud.nasa.gov/NISAR/DEM/v1.2/"
     "EPSG4326/EPSG4326.vrt"
@@ -47,7 +53,11 @@ SHORT_NAMES = {
     "RSLC": "NISAR_L1_RSLC_BETA_V1",
     "GCOV": "NISAR_L2_GCOV_BETA_V1",
     "GSLC": "NISAR_L2_GSLC_BETA_V1",
+    "RIFG": "NISAR_L1_RIFG_BETA_V1",
+    "RUNW": "NISAR_L1_RUNW_BETA_V1",
 }
+IFG_PRODUCTS = ("RIFG", "RUNW")
+IFG_LAYER = {"RIFG": "wrappedInterferogram", "RUNW": "unwrappedPhase"}
 QUANTITY = "incidenceAngle"
 WINDOW_M = 10000.0  # side of the test window, metres
 RSLC_GRID = "/science/LSAR/RSLC/metadata/geolocationGrid"
@@ -99,10 +109,11 @@ def _configure_gdal(access):
 
 
 class Granules:
-    """Resolves product -> URI for one RSLC/GCOV/GSLC acquisition."""
+    """Resolves product -> URI for one RSLC/GCOV/GSLC acquisition and one RIFG/RUNW pair."""
 
     def __init__(self):
         self.stem = os.environ.get("NISAR_TEST_GRANULE", DEFAULT_STEM)
+        self.ifg_stem = os.environ.get("NISAR_TEST_IFG_GRANULE", DEFAULT_IFG_STEM)
         self.local_dir = os.environ.get("NISAR_TEST_DATA_DIR")
         self.dem = os.environ.get("NISAR_TEST_DEM", DEFAULT_DEM)
         self.access = os.environ.get(
@@ -113,8 +124,9 @@ class Granules:
         self._window = None
 
     def _filename(self, product):
-        level = "L1" if product == "RSLC" else "L2"
-        return f"NISAR_{level}_PR_{product}_{self.stem}.h5"
+        level = "L1" if product in ("RSLC",) + IFG_PRODUCTS else "L2"
+        stem = self.ifg_stem if product in IFG_PRODUCTS else self.stem
+        return f"NISAR_{level}_PR_{product}_{stem}.h5"
 
     def uri(self, product):
         if product in self._uris:
@@ -278,19 +290,36 @@ def test_missing_quantity_fails(granules):
 # --- Level-1 (RSLC): interpolation in radar coordinates ---------------------------
 
 
-class RslcCube:
-    """Geolocation-grid cubes + axes with an independent numpy trilinear kernel."""
+def _l1_paths(product):
+    """(geolocationGrid, slantRange group, zeroDopplerTime group, reference raster).
+    RSLC keeps the time axis at swaths/ and range under frequencyA/; RIFG/RUNW nest both
+    under frequencyA/interferogram/."""
+    root = f"/science/LSAR/{product}"
+    grid = root + "/metadata/geolocationGrid"
+    if product == "RSLC":
+        return grid, root + "/swaths/frequencyA", root + "/swaths", root + "/swaths/frequencyA/HH"
+    ifg = root + "/swaths/frequencyA/interferogram"
+    return grid, ifg, ifg, f"{ifg}/HH/{IFG_LAYER[product]}"
 
-    def __init__(self, granules):
-        (self.hgt, self.crange, self.ctime, self.srange, self.stime,
-         self.cX, self.cY, self.cQ) = granules.hdf5_arrays(
-            "RSLC",
-            RSLC_GRID + "/heightAboveEllipsoid", RSLC_GRID + "/slantRange",
-            RSLC_GRID + "/zeroDopplerTime",
-            "/science/LSAR/RSLC/swaths/frequencyA/slantRange",
-            "/science/LSAR/RSLC/swaths/zeroDopplerTime",
-            RSLC_GRID + "/coordinateX", RSLC_GRID + "/coordinateY",
-            RSLC_GRID + "/" + QUANTITY)
+
+class L1Cube:
+    """Geolocation-grid cubes + radar axes with an independent numpy trilinear kernel."""
+
+    def __init__(self, granules, product="RSLC"):
+        self.product = product
+        self.grid, rgrp, tgrp, self.ref_path = _l1_paths(product)
+        grid = self.grid
+        (self.hgt, self.crange, self.ctime, self.srange, self.stime, self.dr, self.dt,
+         self.cX, self.cY, self.cQ, epsg) = granules.hdf5_arrays(
+            product,
+            grid + "/heightAboveEllipsoid", grid + "/slantRange", grid + "/zeroDopplerTime",
+            rgrp + "/slantRange", tgrp + "/zeroDopplerTime",
+            rgrp + "/slantRangeSpacing", tgrp + "/zeroDopplerTimeSpacing",
+            grid + "/coordinateX", grid + "/coordinateY", grid + "/" + QUANTITY, grid + "/epsg")
+        self.epsg = int(np.asarray(epsg).ravel()[0])
+        self.srs = osr.SpatialReference()
+        self.srs.ImportFromEPSG(self.epsg)
+        self.srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
     @staticmethod
     def _node(axis, v):
@@ -311,19 +340,17 @@ class RslcCube:
     def constant_dem(
         self, path, value, nodata=None, mask=None, alpha=None, geotransform=True, epsg=4326
     ):
-        """Flat GeoTIFF covering the geolocation-grid footprint (lon/lat bbox +-1 deg,
-        projected to `epsg`). mask: fill value (0/255) for an internal per-dataset mask band;
-        alpha: fill value (0/255) for an explicit second (alpha) band."""
+        """Flat GeoTIFF covering the geolocation-grid footprint (cube-CRS bbox padded by
+        1 deg / 50 km, projected to `epsg`). mask: fill value (0/255) for an internal
+        per-dataset mask band; alpha: fill value (0/255) for an explicit second (alpha) band."""
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(epsg)
         srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        ll = osr.SpatialReference()
-        ll.ImportFromEPSG(4326)
-        ll.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        ct = osr.CoordinateTransformation(ll, srs)
-        lons = (self.cX.min() - 1, self.cX.max() + 1)
-        lats = (self.cY.min() - 1, self.cY.max() + 1)
-        pts = np.array([ct.TransformPoint(float(lo), float(la))[:2] for lo in lons for la in lats])
+        ct = osr.CoordinateTransformation(self.srs, srs)
+        pad = 1.0 if self.epsg == 4326 else 5e4
+        xs = (self.cX.min() - pad, self.cX.max() + pad)
+        ys = (self.cY.min() - pad, self.cY.max() + pad)
+        pts = np.array([ct.TransformPoint(float(x), float(y))[:2] for x in xs for y in ys])
         x0, x1 = pts[:, 0].min(), pts[:, 0].max()
         y0, y1 = pts[:, 1].min(), pts[:, 1].max()
         with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
@@ -348,7 +375,12 @@ class RslcCube:
 
 @pytest.fixture(scope="module")
 def rslc_cube(granules):
-    return RslcCube(granules)
+    return L1Cube(granules)
+
+
+@pytest.fixture(scope="module", params=IFG_PRODUCTS)
+def ifg_cube(request, granules):
+    return L1Cube(granules, request.param)
 
 
 @pytest.fixture(scope="module")
@@ -565,6 +597,123 @@ def test_rslc_matches_gcov_on_common_ground(granules):
         diffs.append(g - Q[y - yoff, x - xoff])
     assert len(diffs) > 50
     assert np.abs(diffs).max() < 1e-3
+
+
+# --- Level-1 interferograms (RIFG/RUNW): nested interferogram/<POL>/<layer> grids -----
+
+
+def _ifg_window(ds, xs=512, ys=200):
+    return ((ds.RasterXSize - xs) // 2, (ds.RasterYSize - ys) // 2, xs, ys)
+
+
+def _read_ifg(granules, cube, quantity=QUANTITY, dem=None, window=None, **oo):
+    opts = [f"QUANTITY={quantity}", f"DEM_FILE={dem or granules.dem}"]
+    opts += [f"{k}={v}" for k, v in oo.items()]
+    ds = gdal.OpenEx(granules.conn(cube.product), gdal.OF_RASTER, open_options=opts)
+    window = window or _ifg_window(ds)
+    return ds.ReadAsArray(*window), window
+
+
+def _bilinear_at(band, inv, x, y):
+    u = inv[0] + x * inv[1] + y * inv[2] - 0.5
+    v = inv[3] + x * inv[4] + y * inv[5] - 0.5
+    i, j = int(np.floor(u)), int(np.floor(v))
+    blk = band.ReadAsArray(i, j, 2, 2).astype(float)
+    fu, fv = u - i, v - j
+    return ((blk[0, 0] * (1 - fu) + blk[0, 1] * fu) * (1 - fv) +
+            (blk[1, 0] * (1 - fu) + blk[1, 1] * fu) * fv)
+
+
+def test_ifg_radar_grid_and_gcps(granules, ifg_cube):
+    """Bare NISAR:file + QUANTITY routes to interferogram/HH/<layer> and inherits the
+    nested slantRange/zeroDopplerTime axes for the GCPs."""
+    p = ifg_cube.product
+    ds = _open_interp(granules, p)
+    ref = gdal.OpenEx(granules.conn(p, ifg_cube.ref_path), gdal.OF_RASTER)
+    assert (ds.RasterXSize, ds.RasterYSize) == (ref.RasterXSize, ref.RasterYSize)
+    assert (ds.RasterXSize, ds.RasterYSize) == (len(ifg_cube.srange), len(ifg_cube.stime))
+    md = ds.GetMetadata()
+    assert md["NISAR_PRODUCT_TYPE"] == p
+    assert md["NISAR_GRID_TYPE"] == "RADAR"
+    assert md["NISAR_CUBE_PATH"] == f"{ifg_cube.grid}/{QUANTITY}"
+    assert md["NISAR_REFERENCE_GRID"] == ifg_cube.ref_path
+    assert md["NISAR_GEOLOCATION_EPSG"] == str(ifg_cube.epsg)
+    assert ds.GetGeoTransform(can_return_null=True) is None
+    nt, nr = len(ifg_cube.ctime), len(ifg_cube.crange)
+    assert ds.GetGCPCount() == ref.GetGCPCount() == nt * nr
+    assert ds.GetGCPSpatialRef().GetAuthorityCode(None) == str(ifg_cube.epsg)
+    gcps = ds.GetGCPs()
+    line = np.array([g.GCPLine for g in gcps]).reshape(nt, nr)
+    pixel = np.array([g.GCPPixel for g in gcps]).reshape(nt, nr)
+    exp_line = (ifg_cube.ctime - ifg_cube.stime[0]) / float(ifg_cube.dt) + 0.5
+    exp_pixel = (ifg_cube.crange - ifg_cube.srange[0]) / float(ifg_cube.dr) + 0.5
+    assert np.allclose(line, exp_line[:, None], atol=1e-6)
+    assert np.allclose(pixel, exp_pixel[None, :], atol=1e-6)
+    assert line.min() < 0.5 < ref.RasterYSize - 0.5 < line.max() < ref.RasterYSize * 1.1
+    assert np.isclose((ifg_cube.stime[-1] - ifg_cube.stime[0]) / float(ifg_cube.dt),
+                      ref.RasterYSize - 1, atol=1e-6)
+
+
+def test_ifg_explicit_pol_matches_default(granules, ifg_cube):
+    a = _open_interp(granules, ifg_cube.product, FREQ="A", POL="HH")
+    b = _open_interp(granules, ifg_cube.product)
+    assert a.GetMetadataItem("NISAR_REFERENCE_GRID") == b.GetMetadataItem("NISAR_REFERENCE_GRID")
+    win = _ifg_window(a, 256, 64)
+    assert np.array_equal(a.ReadAsArray(*win), b.ReadAsArray(*win))
+
+
+@pytest.mark.parametrize("dem_epsg", ["cube", 4326])
+def test_ifg_constant_dem_matches_trilinear(granules, ifg_cube, tmp_dir, dem_epsg):
+    """Flat DEM in the cube CRS (sampled directly) and in EPSG:4326 (warped) must both
+    reproduce a direct trilinear lookup at (h, t, r)."""
+    epsg = ifg_cube.epsg if dem_epsg == "cube" else dem_epsg
+    dem = ifg_cube.constant_dem(
+        os.path.join(tmp_dir, f"dem_{ifg_cube.product}_{epsg}.tif"), 1234.5, epsg=epsg)
+    out, (xoff, yoff, xs, ys) = _read_ifg(granules, ifg_cube, dem=dem)
+    rng = np.random.default_rng(0)
+    px, py = rng.integers(xoff, xoff + xs, 100), rng.integers(yoff, yoff + ys, 100)
+    ref = np.array([ifg_cube.trilinear(ifg_cube.cQ, 1234.5, x, y) for x, y in zip(px, py)])
+    assert np.abs(out[py - yoff, px - xoff] - ref).max() < 2e-5
+
+
+def test_ifg_real_dem_self_consistent(granules, ifg_cube):
+    """Real (EPSG:4326) DEM against a UTM geolocation grid: the warped DEM is limited
+    to the footprint (no global-warp warnings), and the terrain solve is consistent
+    with the product's own digitalElevationModel layer."""
+    warnings = []
+    handler = lambda cls, num, msg: warnings.append(msg)
+    gdal.PushErrorHandler(handler)
+    try:
+        X, win = _read_ifg(granules, ifg_cube, "coordinateX")
+        Y, _ = _read_ifg(granules, ifg_cube, "coordinateY", window=win)
+        Q, _ = _read_ifg(granules, ifg_cube, window=win)
+    finally:
+        gdal.PopErrorHandler()
+    assert not [w for w in warnings if "Invalid latitude" in w]
+    xoff, yoff, xs, ys = win
+    ifg_grp = os.path.dirname(os.path.dirname(ifg_cube.ref_path))
+    (dem_layer,) = granules.hdf5_arrays(ifg_cube.product, ifg_grp + "/digitalElevationModel")
+    dem = gdal.Open(granules.dem)
+    band = dem.GetRasterBand(1)
+    inv = gdal.InvGeoTransform(dem.GetGeoTransform())
+    ll = osr.SpatialReference()
+    ll.ImportFromEPSG(4326)
+    ll.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ct = osr.CoordinateTransformation(ifg_cube.srs, ll)
+    rng = np.random.default_rng(0)
+    px, py = rng.integers(xoff, xoff + xs, 60), rng.integers(yoff, yoff + ys, 60)
+    worst, dh = np.zeros(3), []
+    for x, y in zip(px, py):
+        ex, ny = float(X[y - yoff, x - xoff]), float(Y[y - yoff, x - xoff])
+        lon, lat, _ = ct.TransformPoint(ex, ny)
+        h = _bilinear_at(band, inv, lon, lat)
+        dh.append(h - dem_layer[y, x])
+        worst = np.maximum(worst, [abs(ifg_cube.trilinear(ifg_cube.cX, h, x, y) - ex),
+                                   abs(ifg_cube.trilinear(ifg_cube.cY, h, x, y) - ny),
+                                   abs(ifg_cube.trilinear(ifg_cube.cQ, h, x, y) -
+                                       Q[y - yoff, x - xoff])])
+    assert np.median(np.abs(dh)) < 0.5 and np.max(np.abs(dh)) < 2.0  # metres
+    assert worst[0] < 2.0 and worst[1] < 2.0 and worst[2] < 1e-3  # metres, metres, degrees
 
 
 if __name__ == "__main__":

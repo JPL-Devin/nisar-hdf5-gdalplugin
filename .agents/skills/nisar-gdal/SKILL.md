@@ -199,6 +199,8 @@ gdal_translate -oo QUANTITY=incidenceAngle -oo FREQ=B -oo POL=HV -oo DEM_FILE="$
 # RSLC: radar-coordinate output on the HH swath grid, GCPs attached; ocean/DEM gaps at 0 m
 gdal_translate -co TILED=YES -co COMPRESS=ZSTD -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" \
   -oo DEM_NODATA_HEIGHT=0 NISAR:"$RSLC" inc_rslc.tif
+# RUNW/RIFG: same, on the multilooked interferogram/HH/<layer> grid (UTM GCPs)
+gdal_translate -oo QUANTITY=incidenceAngle -oo DEM_FILE="$DEM" NISAR:"$RUNW" inc_runw.tif
 ```
 
 What the driver does (v0.7.0):
@@ -211,17 +213,21 @@ What the driver does (v0.7.0):
 3. The **target grid** is chosen from the product type in the granule, honouring `INST`/`FREQ`/`POL`:
    GCOV, GSLC → `/science/<INST>/<PRODUCT>/grids/frequency<F>/<POL>` (default `HHHH` / `HH`);
    GUNW → `.../grids/frequency<F>/unwrappedInterferogram/<POL>/unwrappedPhase` (default `HH`);
-   RSLC → `.../swaths/frequency<F>/<POL>` (default `HH`), cube under `metadata/geolocationGrid`.
-   RIFG/RUNW fail with "Level-1 product … is not supported yet (only RSLC swaths)".
+   RSLC → `.../swaths/frequency<F>/<POL>` (default `HH`); RIFG → `.../swaths/frequency<F>/
+   interferogram/<POL>/wrappedInterferogram`, RUNW → `.../interferogram/<POL>/unwrappedPhase`
+   (default `HH`); on L1 the cube is under `metadata/geolocationGrid`. ROFF is not routed
+   ("Level-1 product ROFF is not supported (only RSLC, RIFG, RUNW)").
 4. L2/L3: the DEM is a lazily-warped VRT on the target grid (`DEM_RESAMPLING`; blocks resampled on
    demand, so memory is bounded on GSLC-sized grids); the whole cube is loaded into RAM and each
    output pixel is interpolated in height. Output is a single-band **Float32** raster with the target
    grid's georeferencing, 512×512 blocks, NaN where the cube is missing, height 0 outside DEM coverage.
-5. RSLC: output pixels are (slant range, zero-Doppler time) from the swath vectors, indexed into
-   the cube by the geolocation grid's `slantRange`/`zeroDopplerTime` axes. Per pixel the terrain
-   height is solved by fixed-point iteration h → DEM(coordinateX(h), coordinateY(h)) (bilinear DEM
-   sample in the geolocation CRS, 0.1 m tolerance, ≤10 passes), DEM nodata/absent →
-   `DEM_NODATA_HEIGHT`. No GeoTransform; the swath GCPs + GCP CRS are passed through
+5. L1 (RSLC, RIFG, RUNW): output pixels are (slant range, zero-Doppler time) from the `slantRange`/
+   `zeroDopplerTime` vectors nearest above the reference raster (RSLC: `frequency<F>` + `swaths`;
+   RIFG/RUNW: `frequency<F>/interferogram`), indexed into the cube by the geolocation grid's own
+   axes. Per pixel the terrain height is solved by fixed-point iteration h → DEM(coordinateX(h),
+   coordinateY(h)) (bilinear DEM sample in the geolocation CRS — a DEM in another CRS is warped
+   lazily over the footprint window only; RIFG/RUNW grids are UTM — 0.1 m tolerance, ≤10 passes),
+   DEM nodata/absent → `DEM_NODATA_HEIGHT`. No GeoTransform; the GCPs + GCP CRS are passed through
    (`NISAR_GRID_TYPE=RADAR`, `NISAR_GEOLOCATION_EPSG`), so `gdalwarp` the result like the swath.
    `QUANTITY=coordinateX|coordinateY` yields the solved ground coordinates (Float32 precision).
    Observed: full 26126×7600 swath in 37 s / ~1.2 GB RSS over HTTPS; ~10 ms per 512×512 block.

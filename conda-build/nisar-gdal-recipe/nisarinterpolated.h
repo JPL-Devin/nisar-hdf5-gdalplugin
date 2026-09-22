@@ -79,7 +79,9 @@ private:
     OGRSpatialReference m_oGCPSRS;
 
     bool InitRadarGrid(NisarDataset* poCube, NisarDataset* poSwath,
-                       const std::string& sCubeGroup, const std::string& sSwathGroup);
+                       const std::string& sCubeGroup, const std::string& sRefPath);
+    bool DEMWindowForFootprint(const OGRSpatialReference* poDEMSRS,
+                               int& nX, int& nY, int& nW, int& nH) const;
 
     // Interpolation helpers shared by the raster band
     NisarCubeXY CubeXY(double dfNodeX, double dfNodeY) const;
