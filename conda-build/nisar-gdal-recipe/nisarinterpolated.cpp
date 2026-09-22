@@ -224,7 +224,7 @@ void NisarInterpolatedDataset::CubeZ(double dfHeight, int& z0, int& z1, double& 
     z0 = 0;
     z1 = 0;
     wz = 0.0;
-    if (nZ < 2) return;
+    if (nZ < 2 || std::isnan(dfHeight)) return;
     if (dfHeight <= m_zVect.front()) return;
     if (dfHeight >= m_zVect.back()) {
         z0 = z1 = nZ - 1;
@@ -320,14 +320,22 @@ bool NisarInterpolatedDataset::InitRadarGrid(NisarDataset* poCube, NisarDataset*
             return false;
         }
     }
-    GDALGetGeoTransform(m_poAlignedDEM, m_adfDEMGeoTransform);
+    if (GDALGetGeoTransform(m_poAlignedDEM, m_adfDEMGeoTransform) != CE_None) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Interpolation: DEM has no affine geotransform (GCP/RPC-only DEMs are not supported).");
+        return false;
+    }
     if (!GDALInvGeoTransform(m_adfDEMGeoTransform, m_adfDEMInvGeoTransform)) {
         CPLError(CE_Failure, CPLE_AppDefined, "Interpolation: DEM geotransform is not invertible.");
         return false;
     }
     int bHasNoData = FALSE;
-    m_dfDEMNoData = m_poAlignedDEM->GetRasterBand(1)->GetNoDataValue(&bHasNoData);
+    GDALRasterBand* poDEMBand = m_poAlignedDEM->GetRasterBand(1);
+    m_dfDEMNoData = poDEMBand->GetNoDataValue(&bHasNoData);
     m_bDEMHasNoData = bHasNoData != FALSE;
+    // Per-dataset / alpha masks are read alongside the DEM; nodata-only masks are covered by value.
+    const int nMaskFlags = poDEMBand->GetMaskFlags();
+    m_bDEMHasMask = (nMaskFlags & GMF_ALL_VALID) == 0 && nMaskFlags != GMF_NODATA;
     m_bRadarGrid = true;
     return true;
 }
@@ -511,6 +519,11 @@ GDALDataset* NisarInterpolatedDataset::Open(GDALOpenInfo* poOpenInfo)
     if (bIsLevel1) {
         // Radar grid: axes, coordinateX/Y cubes, GCP passthrough, DEM in cube CRS.
         poDS->m_dfNoDataHeight = CPLAtof(CSLFetchNameValueDef(papszOO, "DEM_NODATA_HEIGHT", "0"));
+        if (!std::isfinite(poDS->m_dfNoDataHeight)) {
+            CPLError(CE_Failure, CPLE_IllegalArg,
+                     "NISAR Driver: DEM_NODATA_HEIGHT must be a finite height in metres.");
+            delete poDS; GDALClose(poCoarseCubeDS); GDALClose(poTargetGridDS); return nullptr;
+        }
         const std::string sCubeGroup = sCubePath.substr(0, sCubePath.rfind('/'));
         const std::string sSwathGroup = sRefPath.substr(0, sRefPath.rfind('/'));
         if (!poDS->InitRadarGrid(poCoarseCubeDS, poTargetGridDS, sCubeGroup, sSwathGroup)) {
