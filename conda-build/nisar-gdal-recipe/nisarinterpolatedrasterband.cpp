@@ -302,11 +302,11 @@ CPLErr NisarInterpolatedRasterBand::ReadRadarBlock(int nBlockXOff, int nBlockYOf
                      nBlockXOff, nBlockYOff);
             return CE_Failure;
         }
-        if (poGDS->m_bDEMHasMask) {
+        if (poGDS->m_poDEMMaskBand != nullptr) {
             win.mask.assign(nWin, 0);
-            if (poDEMBand->GetMaskBand()->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
-                                                   win.mask.data(), win.nXSize, win.nYSize, GDT_Byte,
-                                                   0, 0, nullptr) != CE_None) {
+            if (poGDS->m_poDEMMaskBand->RasterIO(GF_Read, win.nX0, win.nY0, win.nXSize, win.nYSize,
+                                                 win.mask.data(), win.nXSize, win.nYSize, GDT_Byte,
+                                                 0, 0, nullptr) != CE_None) {
                 CPLError(CE_Failure, CPLE_AppDefined,
                          "NISAR Interpolation: Failed to read DEM mask window for block (%d,%d).",
                          nBlockXOff, nBlockYOff);

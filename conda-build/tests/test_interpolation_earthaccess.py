@@ -308,17 +308,25 @@ class RslcCube:
                     c += cube[zi + dz, yi + dy, xi + dx] * fz * fy * fx
         return c
 
-    def constant_dem(self, path, value, nodata=None, mask=None, geotransform=True):
-        """Flat EPSG:4326 GeoTIFF covering the geolocation-grid footprint.
-        mask: fill value (0/255) for an internal per-dataset mask band."""
+    def constant_dem(self, path, value, nodata=None, mask=None, geotransform=True, epsg=4326):
+        """Flat GeoTIFF covering the geolocation-grid footprint (lon/lat bbox +-1 deg,
+        projected to `epsg`). mask: fill value (0/255) for an internal per-dataset mask band."""
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(epsg)
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        ll = osr.SpatialReference()
+        ll.ImportFromEPSG(4326)
+        ll.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        ct = osr.CoordinateTransformation(ll, srs)
+        lons = (self.cX.min() - 1, self.cX.max() + 1)
+        lats = (self.cY.min() - 1, self.cY.max() + 1)
+        pts = np.array([ct.TransformPoint(float(lo), float(la))[:2] for lo in lons for la in lats])
+        x0, x1 = pts[:, 0].min(), pts[:, 0].max()
+        y0, y1 = pts[:, 1].min(), pts[:, 1].max()
         with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
             ds = gdal.GetDriverByName("GTiff").Create(path, 64, 64, 1, gdal.GDT_Float32)
-            x0, x1 = self.cX.min() - 1, self.cX.max() + 1
-            y0, y1 = self.cY.min() - 1, self.cY.max() + 1
             if geotransform:
                 ds.SetGeoTransform([x0, (x1 - x0) / 64, 0, y1, 0, -(y1 - y0) / 64])
-            srs = osr.SpatialReference()
-            srs.ImportFromEPSG(4326)
             ds.SetProjection(srs.ExportToWkt())
             ds.GetRasterBand(1).Fill(value)
             if nodata is not None:
@@ -457,6 +465,21 @@ def test_rslc_dem_mask_band_honoured(granules, rslc_cube, tmp_dir):
     assert np.array_equal(_read_rslc(granules, dem=masked, DEM_NODATA_HEIGHT=1000),
                           _read_rslc(granules, dem=flat1k))
     assert np.array_equal(_read_rslc(granules, dem=unmasked), _read_rslc(granules, dem=flat1k))
+
+
+def test_rslc_dem_mask_survives_reprojection(granules, rslc_cube, tmp_dir):
+    """DEM in another CRS is warped lazily; its mask (no nodata value) must still
+    route masked terrain to DEM_NODATA_HEIGHT."""
+    masked = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_3857_masked.tif"), 1000.0,
+                                    mask=0, epsg=3857)
+    unmasked = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_3857.tif"), 1000.0, epsg=3857)
+    flat20 = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_20.tif"), 20.0)
+    flat1k = rslc_cube.constant_dem(os.path.join(tmp_dir, "dem_1kc.tif"), 1000.0)
+    assert np.array_equal(_read_rslc(granules, dem=masked, DEM_NODATA_HEIGHT=20),
+                          _read_rslc(granules, dem=flat20))
+    # sanity: the reprojected DEM itself is used when valid (bilinear warp of a constant)
+    assert np.allclose(_read_rslc(granules, dem=unmasked), _read_rslc(granules, dem=flat1k),
+                       atol=2e-5)
 
 
 def test_rslc_real_dem_self_consistent(granules, rslc_cube):
