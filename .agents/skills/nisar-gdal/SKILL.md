@@ -77,6 +77,9 @@ matched case-insensitively by GDAL; the canonical spelling is upper case.
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto a geocoded (L2/L3) target grid; unused on L1. |
 | `DEM_NODATA_HEIGHT` | metres, default `0` | L1 interpolation only: height assumed where the DEM is nodata / masked / absent (ocean). Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>` (L2/L3) or `metadata/geolocationGrid/<QUANTITY>` (L1). |
+| `DUMP` | `YES` / `NO` (default `NO`) | Optional. Only advertises the `NISAR_DUMP` domain (`-mdd all`); never changes `SUBDATASETS`. `gdalinfo -mdd NISAR_DUMP` works without it. |
+| `DUMP_ROOT` | HDF5 group, default `/science/<INST>` (instrument of the explicit raster path, else `INST`, else detected) | Start of the dump traversal; `/` = whole file. Must exist or the open fails. |
+| `DUMP_MODE` | `HEADER` (default) / `FULL` | `HEADER`: objects, datatypes, dataspaces, attributes (with values), no dataset values. `FULL`: also `DATA { … }` for scalars / 1-D datasets ≤ `NISAR_DUMP_MAX_ELEMENTS` (64) elements; larger ones print `(N elements, not printed)`. |
 | `ENABLE_PAGE_BUFFERING` | boolean, default `NO` | Reserved. The driver always sets a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 **There are no `LAYER` or `MEASURE` options.** GUNW/GOFF/RUNW/RIFG layers must be addressed by
@@ -99,6 +102,9 @@ gdalinfo NISAR:"$GCOV"                                           # inventory
 gdalinfo NISAR:"$GCOV" | grep identification/                    # productType, boundingPolygon, times…
 gdalinfo -mdd all -oo METADATA=ALL NISAR:"$GCOV"                 # every metadata domain
 gdalinfo -mdd NISAR_ORBIT -oo METADATA=ORBIT NISAR:"$GCOV"       # one group
+gdalinfo -mdd NISAR_DUMP NISAR:"$GCOV"                            # h5dump-like walk of /science/LSAR (no option needed)
+gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL -oo DUMP_ROOT=/science/LSAR/identification NISAR:"$GCOV"
+gdalinfo -mdd all -oo DUMP=YES NISAR:"$GCOV"                      # DUMP=YES: advertise the domain to -mdd all
 gdalinfo -nogcp NISAR:"$RSLC":/science/LSAR/RSLC/swaths/frequencyA/HH   # L1: suppress GCP dump
 gdallocationinfo NISAR:"$GCOV":/science/LSAR/GCOV/grids/frequencyA/HHHH 100 200
 CPL_DEBUG=NISAR_DRIVER gdalinfo -oo FREQ=A -oo POL=HHHH NISAR:"$GCOV"
@@ -113,6 +119,12 @@ Metadata domains you will see:
   (`numberOfSubSwaths`, `listOfPolarizations`, spacing values, …).
 - `NISAR_GLOBAL` — root-level HDF5 attributes.
 - `SUBDATASETS` — container only.
+- `NISAR_DUMP` — on request (`-mdd NISAR_DUMP`, no open option needed): one line per h5dump-style text line (`GROUP "..." {`,
+  `DATASET "..." {`, `DATATYPE`, `DATASPACE`, `ATTRIBUTE`, `DATA`, `}`, plus `SOFTLINK` /
+  `EXTERNAL_LINK` / `HARDLINK` records for links, not followed) under `DUMP_ROOT`. Built
+  lazily in one `H5Lvisit` pass; HEADER mode reads object headers/attributes only (2-4 s for a
+  full `/science/LSAR` walk of a remote RSLC/GUNW). Listed by `GetMetadataDomainList()` /
+  `-mdd all` only with `-oo DUMP=YES`. In Python: `ds.GetMetadata_List("NISAR_DUMP")`.
 - `DERIVED_SUBDATASETS` — numeric rasters only (see below).
 - `NISAR_<GROUP>` — only when requested with `METADATA=`.
 

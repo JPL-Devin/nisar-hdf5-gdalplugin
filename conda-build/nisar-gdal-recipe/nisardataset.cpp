@@ -19,6 +19,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <limits>
 #include <thread>
 
 
@@ -1272,6 +1273,8 @@ NisarDataset::~NisarDataset()
     // Clean up Metadata caches
     CSLDestroy(m_papszGlobalMetadata);  // Destroy global metadata list
     m_papszGlobalMetadata = nullptr;
+    CSLDestroy(m_papszDumpMetadata);
+    m_papszDumpMetadata = nullptr;
 }
 
 /**
@@ -1582,6 +1585,8 @@ char **NisarDataset::GetMetadataDomainList()
     // Add SUBDATASETS if populated by Open
     if (papszSubDatasets != nullptr)
         papszDomains = CSLAddString(papszDomains, "SUBDATASETS");
+    if (m_bDumpEnabled)
+        papszDomains = CSLAddString(papszDomains, "NISAR_DUMP");
 
     // Add DERIVED_SUBDATASETS if this is a raster dataset (not container)
     // and the type is numeric.
@@ -1773,6 +1778,19 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
     if (pszDomain != nullptr && EQUAL(pszDomain, "SUBDATASETS"))
     {
         return CSLDuplicate(papszSubDatasets);  // Return copy
+    }
+
+    // Handle NISAR_DUMP Domain (h5dump-style listing, lazily built)
+    if (pszDomain != nullptr && EQUAL(pszDomain, "NISAR_DUMP"))
+    {
+        if (hHDF5 < 0)
+            return nullptr;
+        std::lock_guard<std::mutex> lock(m_DumpMetadataMutex);
+        if (!m_bGotDumpMetadata)
+        {
+            m_bGotDumpMetadata = LoadDumpMetadata();
+        }
+        return m_papszDumpMetadata;
     }
 
     // Handle Default Domain ("" or nullptr)
@@ -2273,6 +2291,779 @@ void NisarDataset::LoadMetadataDomain(const std::string& sKeyword)
     H5Gclose(hGroup);
 }
 
+// ====================================================================
+// NISAR_DUMP (h5dump-style listing, DUMP=YES)
+// ====================================================================
+
+struct NISAR_DumpVisitData
+{
+    NisarDataset *poDS;
+    std::string sRoot;      // absolute path of the traversal root
+    char **papszLines;      // CSL list of output lines
+    size_t nMaxElements;    // element cap for printed DATA blocks
+    size_t nMaxStringChars; // per-string cap for printed values
+    std::vector<std::string> aosOpenGroups; // groups whose '}' is still pending
+    std::map<std::string, std::string> oVisitedObjects; // object token -> first path
+};
+
+static std::string NisarDumpObjectKind(H5O_type_t eType)
+{
+    switch (eType)
+    {
+        case H5O_TYPE_GROUP:          return "GROUP";
+        case H5O_TYPE_DATASET:        return "DATASET";
+        case H5O_TYPE_NAMED_DATATYPE: return "DATATYPE";
+        default:                      return "OBJECT";
+    }
+}
+
+static bool NisarDumpIsUnder(const std::string &sParent, const std::string &sPath)
+{
+    if (sPath.size() <= sParent.size() ||
+        sPath.compare(0, sParent.size(), sParent) != 0)
+        return false;
+    return sParent == "/" || sPath[sParent.size()] == '/';
+}
+
+// Emits the closing brace of every open group that does not contain sPath
+// (H5Lvisit is pre-order, so leaving a subtree means moving to a sibling or
+// ancestor). An empty sPath closes everything.
+static void NisarDumpCloseGroups(NISAR_DumpVisitData *data, const std::string &sPath)
+{
+    while (!data->aosOpenGroups.empty() &&
+           (sPath.empty() || !NisarDumpIsUnder(data->aosOpenGroups.back(), sPath)))
+    {
+        data->papszLines = CSLAddString(data->papszLines, "}");
+        data->aosOpenGroups.pop_back();
+    }
+}
+
+// Byte length of the UTF-8 sequence introduced by lead byte c (1 for ASCII
+// and for bytes that cannot start a sequence, which are passed through).
+static size_t NisarDumpUtf8SeqLen(unsigned char c)
+{
+    if (c >= 0xF0 && c <= 0xF7) return 4;
+    if (c >= 0xE0) return 3;
+    if (c >= 0xC0) return 2;
+    return 1;
+}
+
+static size_t NisarDumpUtf8Length(const std::string &s)
+{
+    size_t nChars = 0;
+    for (size_t i = 0; i < s.size(); i += NisarDumpUtf8SeqLen(static_cast<unsigned char>(s[i])))
+        ++nChars;
+    return nChars;
+}
+
+// Quotes at most nMax characters of sIn, cutting only on UTF-8 code-point
+// boundaries. nStorageSize > 0 means sIn is a bounded read of a fixed-length
+// string of that declared size (so it may end in a split code point), and the
+// truncation marker reports the STRSIZE instead of the (unknown) length.
+static std::string NisarDumpQuote(const std::string &sIn, size_t nMax,
+                                  size_t nStorageSize = 0)
+{
+    std::string sOut = "\"";
+    size_t nUsed = 0;
+    for (size_t i = 0; i < sIn.size();)
+    {
+        const size_t nLen = NisarDumpUtf8SeqLen(static_cast<unsigned char>(sIn[i]));
+        if (nUsed++ >= nMax || i + nLen > sIn.size())
+        {
+            if (nStorageSize > 0)
+                sOut += CPLSPrintf("...\" (STRSIZE %llu)",
+                                   static_cast<unsigned long long>(nStorageSize));
+            else
+                sOut += CPLSPrintf("...\" (%llu chars)",
+                                   static_cast<unsigned long long>(NisarDumpUtf8Length(sIn)));
+            return sOut;
+        }
+        if (nLen > 1)
+        {
+            sOut.append(sIn, i, nLen);
+            i += nLen;
+            continue;
+        }
+        const char c = sIn[i++];
+        switch (c)
+        {
+            case '\n': sOut += "\\n"; break;
+            case '\r': sOut += "\\r"; break;
+            case '\t': sOut += "\\t"; break;
+            case '"':  sOut += "\\\""; break;
+            case '\\': sOut += "\\\\"; break;
+            default:   sOut += c; break;
+        }
+    }
+    return sOut + "\"";
+}
+
+// h5dump-style datatype description, e.g. H5T_IEEE_F32LE, H5T_STD_U8LE,
+// H5T_STRING { STRSIZE 4; ... }, H5T_COMPOUND { ... }.
+static std::string NisarDumpTypeString(hid_t hType)
+{
+    const H5T_class_t eClass = H5Tget_class(hType);
+    const size_t nSize = H5Tget_size(hType);
+    const H5T_order_t eOrder = H5Tget_order(hType);
+    const char *pszOrder = (eOrder == H5T_ORDER_BE) ? "BE" : "LE";
+
+    switch (eClass)
+    {
+        case H5T_INTEGER:
+            return CPLSPrintf("H5T_STD_%c%u%s",
+                              (H5Tget_sign(hType) == H5T_SGN_NONE) ? 'U' : 'I',
+                              static_cast<unsigned>(nSize * 8), pszOrder);
+        case H5T_FLOAT:
+            return CPLSPrintf("H5T_IEEE_F%u%s", static_cast<unsigned>(nSize * 8),
+                              pszOrder);
+        case H5T_STRING:
+        {
+            std::string s = "H5T_STRING { STRSIZE ";
+            if (H5Tis_variable_str(hType) > 0)
+                s += "H5T_VARIABLE";
+            else
+                s += CPLSPrintf("%llu", static_cast<unsigned long long>(nSize));
+            s += "; STRPAD ";
+            switch (H5Tget_strpad(hType))
+            {
+                case H5T_STR_NULLPAD:  s += "H5T_STR_NULLPAD"; break;
+                case H5T_STR_SPACEPAD: s += "H5T_STR_SPACEPAD"; break;
+                default:               s += "H5T_STR_NULLTERM"; break;
+            }
+            s += "; CSET ";
+            s += (H5Tget_cset(hType) == H5T_CSET_UTF8) ? "H5T_CSET_UTF8"
+                                                       : "H5T_CSET_ASCII";
+            s += "; CTYPE H5T_C_S1; }";
+            return s;
+        }
+        case H5T_COMPOUND:
+        {
+            std::string s = "H5T_COMPOUND { ";
+            const int nMembers = H5Tget_nmembers(hType);
+            for (int i = 0; i < nMembers; ++i)
+            {
+                hid_t hMember = H5Tget_member_type(hType, i);
+                char *pszName = H5Tget_member_name(hType, i);
+                if (hMember >= 0)
+                {
+                    s += NisarDumpTypeString(hMember);
+                    H5Tclose(hMember);
+                }
+                s += CPLSPrintf(" \"%s\"; ", pszName ? pszName : "?");
+                if (pszName) H5free_memory(pszName);
+            }
+            return s + "}";
+        }
+        case H5T_ENUM:
+        {
+            hid_t hSuper = H5Tget_super(hType);
+            std::string s = "H5T_ENUM { ";
+            if (hSuper >= 0)
+            {
+                s += NisarDumpTypeString(hSuper) + "; ";
+                H5Tclose(hSuper);
+            }
+            return s + CPLSPrintf("%d members }", H5Tget_nmembers(hType));
+        }
+        case H5T_VLEN:
+        {
+            hid_t hSuper = H5Tget_super(hType);
+            std::string s = "H5T_VLEN { ";
+            if (hSuper >= 0)
+            {
+                s += NisarDumpTypeString(hSuper);
+                H5Tclose(hSuper);
+            }
+            return s + " }";
+        }
+        case H5T_ARRAY:
+        {
+            hid_t hSuper = H5Tget_super(hType);
+            std::string s = "H5T_ARRAY { ";
+            const int nRank = H5Tget_array_ndims(hType);
+            if (nRank > 0 && nRank <= H5S_MAX_RANK)
+            {
+                hsize_t adims[H5S_MAX_RANK];
+                H5Tget_array_dims2(hType, adims);
+                s += "[ ";
+                for (int i = 0; i < nRank; ++i)
+                    s += CPLSPrintf("%llu%s", static_cast<unsigned long long>(adims[i]),
+                                    (i < nRank - 1) ? ", " : " ");
+                s += "] ";
+            }
+            if (hSuper >= 0)
+            {
+                s += NisarDumpTypeString(hSuper);
+                H5Tclose(hSuper);
+            }
+            return s + " }";
+        }
+        case H5T_REFERENCE: return "H5T_REFERENCE";
+        case H5T_OPAQUE:    return CPLSPrintf("H5T_OPAQUE { %llu bytes }",
+                                              static_cast<unsigned long long>(nSize));
+        case H5T_BITFIELD:  return CPLSPrintf("H5T_STD_B%u%s",
+                                              static_cast<unsigned>(nSize * 8), pszOrder);
+#ifdef H5T_COMPLEX
+        case H5T_COMPLEX:
+        {
+            hid_t hSuper = H5Tget_super(hType);
+            std::string s = "H5T_COMPLEX { ";
+            if (hSuper >= 0)
+            {
+                s += NisarDumpTypeString(hSuper);
+                H5Tclose(hSuper);
+            }
+            return s + " }";
+        }
+#endif
+        default:
+            return CPLSPrintf("H5T_CLASS_%d", static_cast<int>(eClass));
+    }
+}
+
+static std::string NisarDumpSpaceString(hid_t hSpace)
+{
+    const H5S_class_t eClass = H5Sget_simple_extent_type(hSpace);
+    if (eClass == H5S_SCALAR) return "SCALAR";
+    if (eClass == H5S_NULL)   return "NULL";
+    const int nRank = H5Sget_simple_extent_ndims(hSpace);
+    if (nRank <= 0 || nRank > H5S_MAX_RANK) return "SIMPLE { ? }";
+    hsize_t adims[H5S_MAX_RANK], amax[H5S_MAX_RANK];
+    H5Sget_simple_extent_dims(hSpace, adims, amax);
+    std::string sCur = "( ", sMax = "( ";
+    for (int i = 0; i < nRank; ++i)
+    {
+        const char *pszSep = (i < nRank - 1) ? ", " : " ";
+        sCur += CPLSPrintf("%llu%s", static_cast<unsigned long long>(adims[i]), pszSep);
+        if (amax[i] == H5S_UNLIMITED)
+            sMax += CPLSPrintf("H5S_UNLIMITED%s", pszSep);
+        else
+            sMax += CPLSPrintf("%llu%s", static_cast<unsigned long long>(amax[i]), pszSep);
+    }
+    return "SIMPLE { " + sCur + ") / " + sMax + ") }";
+}
+
+// Reads every element of an attribute (bIsAttr) or dataset and renders them
+// into sOut as a comma-separated list. Only INTEGER, FLOAT, STRING and
+// two-member complex COMPOUND / native COMPLEX types are printed; anything
+// else leaves sOut empty. Returns false only when an HDF5 read failed.
+static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
+                                hid_t hSpace, size_t nCount,
+                                size_t nMaxStringChars, std::string &sOut)
+{
+    const H5T_class_t eClass = H5Tget_class(hType);
+    sOut.clear();
+    bool bReadFailed = false;
+
+    // A missing file->memory conversion path means the type is unsupported,
+    // not that the read failed; only an actual H5Aread/H5Dread error is fatal.
+    auto Read = [&](hid_t hMemType, void *pBuf) -> bool {
+        H5T_cdata_t *psCData = nullptr;
+        if (H5Tfind(hType, hMemType, &psCData) == nullptr) return false;
+        const herr_t eErr =
+            bIsAttr ? H5Aread(hObj, hMemType, pBuf)
+                    : H5Dread(hObj, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pBuf);
+        if (eErr < 0) bReadFailed = true;
+        return eErr >= 0;
+    };
+    auto Join = [&](size_t i) { if (i > 0) sOut += ", "; };
+
+    if (eClass == H5T_STRING)
+    {
+        if (H5Tis_variable_str(hType) > 0)
+        {
+            std::vector<char *> apsz(nCount, nullptr);
+            hid_t hMem = H5Tcopy(H5T_C_S1);
+            H5Tset_size(hMem, H5T_VARIABLE);
+            H5Tset_cset(hMem, H5Tget_cset(hType));
+            // Variable-length strings are materialized whole by H5Dread, so
+            // ask HDF5 for the total payload first (this reads the sequence
+            // lengths, not the heap data) and refuse to read past the byte
+            // budget: up to 4 UTF-8 bytes per printable character plus a
+            // terminator per element (NisarDumpQuote enforces the character
+            // cap itself). H5Dvlen_get_buf_size crashes on scalar dataspaces
+            // (HDF5 2.2), so a scalar VL string is read whole like an attribute.
+            hsize_t nVlenBytes = 0;
+            constexpr hsize_t nMaxH = std::numeric_limits<hsize_t>::max();
+            const hsize_t nBytesPerElement =
+                nMaxStringChars >= (nMaxH - 1) / 4
+                    ? nMaxH
+                    : static_cast<hsize_t>(nMaxStringChars) * 4 + 1;
+            const hsize_t nVlenCap =
+                nCount > nMaxH / nBytesPerElement
+                    ? nMaxH
+                    : static_cast<hsize_t>(nCount) * nBytesPerElement;
+            if (!bIsAttr && H5Sget_simple_extent_type(hSpace) != H5S_SCALAR &&
+                H5Dvlen_get_buf_size(hObj, hMem, hSpace, &nVlenBytes) >= 0 &&
+                nVlenBytes > nVlenCap)
+            {
+                sOut = CPLSPrintf("(variable-length string, %llu bytes, not printed)",
+                                  static_cast<unsigned long long>(nVlenBytes));
+            }
+            else if (Read(hMem, apsz.data()))
+            {
+                for (size_t i = 0; i < nCount; ++i)
+                {
+                    Join(i);
+                    sOut += NisarDumpQuote(apsz[i] ? apsz[i] : "", nMaxStringChars);
+                }
+                H5Treclaim(hMem, hSpace, H5P_DEFAULT, apsz.data());
+            }
+            H5Tclose(hMem);
+        }
+        else
+        {
+            // Read through a memory type no larger than the print cap so
+            // huge fixed-length strings never get allocated in full; HDF5
+            // truncates on the fixed->fixed string conversion. UTF-8 code
+            // points take up to 4 bytes, so size the read accordingly.
+            const size_t nSize = H5Tget_size(hType);
+            const size_t nBytesPerChar = H5Tget_cset(hType) == H5T_CSET_UTF8 ? 4 : 1;
+            const size_t nMemSize = std::min(nSize, nMaxStringChars * nBytesPerChar + 1);
+            hid_t hMem = H5Tcopy(hType);
+            std::vector<char> abyBuf(nCount * nMemSize + 1, '\0');
+            if (nMemSize > 0 && hMem >= 0 &&
+                H5Tset_size(hMem, nMemSize) >= 0 && Read(hMem, abyBuf.data()))
+            {
+                for (size_t i = 0; i < nCount; ++i)
+                {
+                    Join(i);
+                    std::string s(abyBuf.data() + i * nMemSize,
+                                  strnlen(abyBuf.data() + i * nMemSize, nMemSize));
+                    sOut += NisarDumpQuote(s, nMaxStringChars,
+                                           nMemSize < nSize ? nSize : 0);
+                }
+            }
+            if (hMem >= 0) H5Tclose(hMem);
+        }
+    }
+    else if (eClass == H5T_INTEGER)
+    {
+        if (H5Tget_sign(hType) == H5T_SGN_NONE)
+        {
+            std::vector<unsigned long long> a(nCount);
+            if (Read(H5T_NATIVE_ULLONG, a.data()))
+                for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%llu", a[i]); }
+        }
+        else
+        {
+            std::vector<long long> a(nCount);
+            if (Read(H5T_NATIVE_LLONG, a.data()))
+                for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%lld", a[i]); }
+        }
+    }
+    else if (eClass == H5T_FLOAT)
+    {
+        std::vector<double> a(nCount);
+        if (Read(H5T_NATIVE_DOUBLE, a.data()))
+            for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%.17g", a[i]); }
+    }
+    else
+    {
+        CPLPushErrorHandler(CPLQuietErrorHandler);
+        const GDALDataType eGDT = NisarDataset::GetGDALDataType(hType);
+        CPLPopErrorHandler();
+        if (eGDT == GDT_CFloat32 || eGDT == GDT_CFloat64 ||
+            eGDT == GDT_CInt16 || eGDT == GDT_CInt32)
+        {
+            std::vector<double> a(nCount * 2);
+            hid_t hMem = H5Tcreate(H5T_COMPOUND, 2 * sizeof(double));
+            if (eClass == H5T_COMPOUND && H5Tget_nmembers(hType) == 2)
+            {
+                for (unsigned i = 0; i < 2; ++i)
+                {
+                    char *pszMember = H5Tget_member_name(hType, i);
+                    H5Tinsert(hMem, pszMember ? pszMember : (i == 0 ? "r" : "i"),
+                              i * sizeof(double), H5T_NATIVE_DOUBLE);
+                    if (pszMember) H5free_memory(pszMember);
+                }
+            }
+            else
+            {
+                H5Tinsert(hMem, "r", 0, H5T_NATIVE_DOUBLE);
+                H5Tinsert(hMem, "i", sizeof(double), H5T_NATIVE_DOUBLE);
+            }
+#ifdef H5T_COMPLEX
+            const bool bOk = (eClass == H5T_COMPLEX)
+                                 ? Read(H5T_NATIVE_DOUBLE_COMPLEX, a.data())
+                                 : Read(hMem, a.data());
+#else
+            const bool bOk = Read(hMem, a.data());
+#endif
+            H5Tclose(hMem);
+            if (bOk)
+                for (size_t i = 0; i < nCount; ++i)
+                {
+                    Join(i);
+                    sOut += CPLSPrintf("%.17g%+.17gj", a[2 * i], a[2 * i + 1]);
+                }
+        }
+    }
+    return !bReadFailed;
+}
+
+static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrName,
+                                         const H5A_info_t * /*pAinfo*/, void *pOpData)
+{
+    NISAR_DumpVisitData *data = static_cast<NISAR_DumpVisitData *>(pOpData);
+
+    hid_t hAttr = H5Aopen(hLocation, pszAttrName, H5P_DEFAULT);
+    if (hAttr < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Aopen('%s') failed; aborting traversal.",
+                 pszAttrName);
+        return H5_ITER_ERROR;
+    }
+    hid_t hType = H5Aget_type(hAttr);
+    hid_t hSpace = H5Aget_space(hAttr);
+    bool bReadOk = true;
+
+    data->papszLines = CSLAddString(data->papszLines,
+                                    CPLSPrintf("   ATTRIBUTE \"%s\" {", pszAttrName));
+    if (hType >= 0)
+        data->papszLines = CSLAddString(
+            data->papszLines,
+            ("      DATATYPE  " + NisarDumpTypeString(hType)).c_str());
+    if (hSpace >= 0)
+    {
+        data->papszLines = CSLAddString(
+            data->papszLines,
+            ("      DATASPACE  " + NisarDumpSpaceString(hSpace)).c_str());
+        const hssize_t nPoints = H5Sget_simple_extent_npoints(hSpace);
+        if (hType >= 0 && nPoints > 0)
+        {
+            if (static_cast<size_t>(nPoints) > data->nMaxElements)
+            {
+                data->papszLines = CSLAddString(
+                    data->papszLines,
+                    CPLSPrintf("      DATA { (%lld elements, not printed) }",
+                               static_cast<long long>(nPoints)));
+            }
+            else
+            {
+                std::string sValues;
+                bReadOk = NisarDumpReadValues(
+                    hAttr, true, hType, hSpace, static_cast<size_t>(nPoints),
+                    data->nMaxStringChars, sValues);
+                if (!sValues.empty())
+                    data->papszLines = CSLAddString(
+                        data->papszLines,
+                        ("      DATA { " + sValues + " }").c_str());
+            }
+        }
+    }
+    data->papszLines = CSLAddString(data->papszLines, "   }");
+
+    if (hSpace >= 0) H5Sclose(hSpace);
+    if (hType >= 0) H5Tclose(hType);
+    H5Aclose(hAttr);
+    if (!bReadOk)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Aread('%s') failed; aborting traversal.",
+                 pszAttrName);
+        return H5_ITER_ERROR;
+    }
+    return 0;
+}
+
+static std::string NisarDumpJoinPath(const std::string &sRoot, const char *name)
+{
+    std::string sPath = sRoot;
+    if (!EQUAL(name, "."))
+    {
+        if (sPath.empty() || sPath.back() != '/') sPath += "/";
+        sPath += name;
+    }
+    return sPath;
+}
+
+// H5Lvisit visits links, not objects: a soft or external link is reported
+// as such (and not followed, as in h5dump), and a second hard link to an
+// already dumped object is reported as a HARDLINK alias instead of being
+// dumped again.
+herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
+                                      const H5L_info2_t *info, void *op_data)
+{
+    NISAR_DumpVisitData *data = static_cast<NISAR_DumpVisitData *>(op_data);
+    const std::string sPath = NisarDumpJoinPath(data->sRoot, name);
+
+    if (info->type == H5L_TYPE_HARD)
+    {
+        H5O_info2_t oInfo;
+        if (H5Oget_info_by_name3(hRoot, name, &oInfo, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
+        {
+            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Oget_info('%s') failed; aborting traversal.",
+                     sPath.c_str());
+            return H5_ITER_ERROR;
+        }
+        char *pszToken = nullptr;
+        if (H5Otoken_to_str(hRoot, &oInfo.token, &pszToken) < 0 || pszToken == nullptr)
+        {
+            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Otoken_to_str('%s') failed; aborting traversal.",
+                     sPath.c_str());
+            return H5_ITER_ERROR;
+        }
+        const std::string sToken(pszToken);
+        H5free_memory(pszToken);
+
+        const auto oSeen = data->oVisitedObjects.find(sToken);
+        if (oSeen == data->oVisitedObjects.end())
+        {
+            data->oVisitedObjects[sToken] = sPath;
+            return DumpObject(hRoot, name, &oInfo, op_data);
+        }
+        NisarDumpCloseGroups(data, sPath);
+        data->papszLines = CSLAddString(
+            data->papszLines, CPLSPrintf("%s \"%s\" {", NisarDumpObjectKind(oInfo.type).c_str(),
+                                         sPath.c_str()));
+        data->papszLines = CSLAddString(
+            data->papszLines, CPLSPrintf("   HARDLINK \"%s\"", oSeen->second.c_str()));
+        data->papszLines = CSLAddString(data->papszLines, "}");
+        return H5_ITER_CONT;
+    }
+
+    NisarDumpCloseGroups(data, sPath);
+    if (info->type == H5L_TYPE_SOFT || info->type == H5L_TYPE_EXTERNAL)
+    {
+        std::vector<char> abyVal(info->u.val_size + 1, '\0');
+        if (info->u.val_size > 0 &&
+            H5Lget_val(hRoot, name, abyVal.data(), abyVal.size(), H5P_DEFAULT) < 0)
+        {
+            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Lget_val('%s') failed; aborting traversal.",
+                     sPath.c_str());
+            return H5_ITER_ERROR;
+        }
+        if (info->type == H5L_TYPE_SOFT)
+        {
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("SOFTLINK \"%s\" {", sPath.c_str()));
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("   LINKTARGET \"%s\"", abyVal.data()));
+        }
+        else
+        {
+            const char *pszFile = "";
+            const char *pszObj = "";
+            unsigned nFlags = 0;
+            if (info->u.val_size > 0 &&
+                H5Lunpack_elink_val(abyVal.data(), info->u.val_size, &nFlags,
+                                    &pszFile, &pszObj) < 0)
+            {
+                pszFile = "";
+                pszObj = "";
+            }
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("EXTERNAL_LINK \"%s\" {", sPath.c_str()));
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("   TARGETFILE \"%s\"", pszFile));
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("   TARGETPATH \"%s\"", pszObj));
+        }
+    }
+    else
+    {
+        data->papszLines = CSLAddString(
+            data->papszLines, CPLSPrintf("USERDEFINED_LINK \"%s\" {", sPath.c_str()));
+        data->papszLines = CSLAddString(
+            data->papszLines, CPLSPrintf("   LINKCLASS %d", static_cast<int>(info->type)));
+    }
+    data->papszLines = CSLAddString(data->papszLines, "}");
+    return H5_ITER_CONT;
+}
+
+herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
+                                const H5O_info2_t *info, void *op_data)
+{
+    NISAR_DumpVisitData *data = static_cast<NISAR_DumpVisitData *>(op_data);
+    const std::string sPath = NisarDumpJoinPath(data->sRoot, name);
+
+    hid_t hObj = H5Oopen(hRoot, name, H5P_DEFAULT);
+    if (hObj < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Oopen('%s') failed; aborting traversal.",
+                 sPath.c_str());
+        return H5_ITER_ERROR;
+    }
+
+    NisarDumpCloseGroups(data, sPath);
+    const bool bIsGroup = (info->type == H5O_TYPE_GROUP);
+    bool bReadOk = true;
+
+    switch (info->type)
+    {
+        case H5O_TYPE_GROUP:
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("GROUP \"%s\" {", sPath.c_str()));
+            break;
+
+        case H5O_TYPE_DATASET:
+        {
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("DATASET \"%s\" {", sPath.c_str()));
+            hid_t hType = H5Dget_type(hObj);
+            hid_t hSpace = H5Dget_space(hObj);
+            if (hType >= 0)
+            {
+                std::string sType = "   DATATYPE  " + NisarDumpTypeString(hType);
+                const H5T_class_t eCls = H5Tget_class(hType);
+                const GDALDataType eGDT =
+                    (eCls == H5T_INTEGER || eCls == H5T_FLOAT || eCls == H5T_COMPOUND
+#ifdef H5T_COMPLEX
+                     || eCls == H5T_COMPLEX
+#endif
+                     )
+                        ? GetGDALDataType(hType) : GDT_Unknown;
+                if (eGDT != GDT_Unknown)
+                    sType += CPLSPrintf("  (GDAL %s)", GDALGetDataTypeName(eGDT));
+                data->papszLines = CSLAddString(data->papszLines, sType.c_str());
+            }
+            if (hSpace >= 0)
+            {
+                data->papszLines = CSLAddString(
+                    data->papszLines,
+                    ("   DATASPACE  " + NisarDumpSpaceString(hSpace)).c_str());
+
+                const int nRank = H5Sget_simple_extent_ndims(hSpace);
+                const hssize_t nPoints = H5Sget_simple_extent_npoints(hSpace);
+                if (data->poDS->m_bDumpFull && hType >= 0 && nRank <= 1 &&
+                    nPoints > 0 && static_cast<size_t>(nPoints) <= data->nMaxElements)
+                {
+                    std::string sValues;
+                    bReadOk = NisarDumpReadValues(
+                        hObj, false, hType, hSpace, static_cast<size_t>(nPoints),
+                        data->nMaxStringChars, sValues);
+                    if (!sValues.empty())
+                        data->papszLines = CSLAddString(
+                            data->papszLines, ("   DATA { " + sValues + " }").c_str());
+                }
+                else if (data->poDS->m_bDumpFull && nPoints > 0)
+                {
+                    data->papszLines = CSLAddString(
+                        data->papszLines,
+                        CPLSPrintf("   DATA { (%lld elements, not printed) }",
+                                   static_cast<long long>(nPoints)));
+                }
+            }
+            if (hSpace >= 0) H5Sclose(hSpace);
+            if (hType >= 0) H5Tclose(hType);
+            break;
+        }
+
+        case H5O_TYPE_NAMED_DATATYPE:
+            data->papszLines = CSLAddString(
+                data->papszLines,
+                CPLSPrintf("DATATYPE \"%s\" { %s", sPath.c_str(),
+                           NisarDumpTypeString(hObj).c_str()));
+            break;
+
+        default:
+            data->papszLines = CSLAddString(
+                data->papszLines, CPLSPrintf("OBJECT \"%s\" {", sPath.c_str()));
+            break;
+    }
+
+    if (!bReadOk)
+    {
+        data->papszLines = CSLAddString(data->papszLines, "}");
+        H5Oclose(hObj);
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Dread('%s') failed; aborting traversal.",
+                 sPath.c_str());
+        return H5_ITER_ERROR;
+    }
+
+    hsize_t idx = 0;
+    const herr_t eAttr = H5Aiterate2(hObj, H5_INDEX_NAME, H5_ITER_NATIVE, &idx,
+                                     NisarDumpAttributeCallback, data);
+
+    // A group's '}' is deferred until the visit leaves its subtree so that
+    // children are nested inside it, as in h5dump.
+    if (bIsGroup)
+        data->aosOpenGroups.push_back(sPath);
+    else
+        data->papszLines = CSLAddString(data->papszLines, "}");
+    H5Oclose(hObj);
+    if (eAttr < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: attribute iteration on '%s' failed; aborting traversal.",
+                 sPath.c_str());
+        return H5_ITER_ERROR;
+    }
+    return H5_ITER_CONT;
+}
+
+bool NisarDataset::LoadDumpMetadata()
+{
+    CSLDestroy(m_papszDumpMetadata);
+    m_papszDumpMetadata = nullptr;
+    if (hHDF5 < 0) return false;
+    bool bOk = false;
+
+    NISAR_DumpVisitData data;
+    data.poDS = this;
+    data.sRoot = m_sDumpRoot.empty() ? "/" : m_sDumpRoot;
+    data.papszLines = nullptr;
+    data.nMaxElements = static_cast<size_t>(std::max(
+        0, atoi(CPLGetConfigOption("NISAR_DUMP_MAX_ELEMENTS", "64"))));
+    data.nMaxStringChars = static_cast<size_t>(std::max(
+        0, atoi(CPLGetConfigOption("NISAR_DUMP_MAX_STRING_CHARS", "2048"))));
+
+    H5E_auto2_t old_func; void *old_client_data;
+    H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
+    H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+
+    hid_t hRoot = H5Oopen(hHDF5, data.sRoot.c_str(), H5P_DEFAULT);
+    if (hRoot >= 0)
+    {
+        data.papszLines = CSLAddString(
+            data.papszLines,
+            CPLSPrintf("HDF5 \"%s\" %s {", pszFilename ? pszFilename : "",
+                       m_bDumpFull ? "FULL" : "HEADER"));
+        // H5Lvisit does not report the root itself, so dump it first (its
+        // header and attributes), then every link below it.
+        H5O_info2_t oRootInfo;
+        herr_t eVisit = H5Oget_info3(hRoot, &oRootInfo, H5O_INFO_BASIC);
+        if (eVisit >= 0)
+        {
+            char *pszToken = nullptr;
+            if (H5Otoken_to_str(hRoot, &oRootInfo.token, &pszToken) >= 0 && pszToken)
+            {
+                data.oVisitedObjects[pszToken] = data.sRoot;
+                H5free_memory(pszToken);
+            }
+            eVisit = DumpObject(hRoot, ".", &oRootInfo, &data);
+        }
+        if (eVisit >= 0)
+            eVisit = H5Lvisit2(hRoot, H5_INDEX_NAME, H5_ITER_NATIVE,
+                               DumpLinkCallback, &data);
+        H5Oclose(hRoot);
+        if (eVisit < 0)
+        {
+            CSLDestroy(data.papszLines);
+            data.papszLines = nullptr;
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "NISAR_DUMP: traversal of '%s' failed (I/O error?); "
+                     "no listing produced.", data.sRoot.c_str());
+        }
+        else
+        {
+            NisarDumpCloseGroups(&data, std::string());
+            data.papszLines = CSLAddString(data.papszLines, "}");
+            bOk = true;
+        }
+    }
+    else
+    {
+        CPLError(CE_Warning, CPLE_AppDefined,
+                 "NISAR_DUMP: cannot open DUMP_ROOT '%s'.", data.sRoot.c_str());
+    }
+
+    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);
+    m_papszDumpMetadata = data.papszLines;
+    CPLDebug("NISAR_DRIVER", "NISAR_DUMP: %d lines from '%s'.",
+             CSLCount(m_papszDumpMetadata), data.sRoot.c_str());
+    return bOk;
+}
+
 /************************************************************************/
 /*                                Open()                                */
 /* This static method is responsible for opening a NISAR HDF5 file and  */
@@ -2449,6 +3240,63 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
     poDS->SetDescription(poOpenInfo->pszFilename);
     poDS->ReadIdentificationMetadata();
+
+    // ====================================================================
+    // DUMP / DUMP_ROOT / DUMP_MODE (NISAR_DUMP metadata domain)
+    // ====================================================================
+    // The NISAR_DUMP domain is always available on request (gdalinfo -mdd NISAR_DUMP);
+    // DUMP=YES additionally advertises it in the domain list (gdalinfo -mdd all).
+    poDS->m_bDumpEnabled = CPLFetchBool(poOpenInfo->papszOpenOptions, "DUMP", false);
+    {
+        const char *pszDumpMode = CSLFetchNameValueDef(poOpenInfo->papszOpenOptions, "DUMP_MODE", "HEADER");
+        if (EQUAL(pszDumpMode, "FULL")) {
+            poDS->m_bDumpFull = true;
+        } else if (!EQUAL(pszDumpMode, "HEADER")) {
+            CPLError(CE_Failure, CPLE_OpenFailed, "Invalid DUMP_MODE '%s' (expected HEADER or FULL).", pszDumpMode);
+            delete poDS; return nullptr;
+        }
+
+        const char *pszDumpRoot = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DUMP_ROOT");
+        const bool bExplicitRoot = pszDumpRoot != nullptr;
+        if (bExplicitRoot && pszDumpRoot[0] == '\0') {
+            CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT must name an HDF5 group (use / for the whole file).");
+            delete poDS; return nullptr;
+        }
+        if (bExplicitRoot) {
+            poDS->m_sDumpRoot = pszDumpRoot;
+        } else {
+            // Instrument precedence: explicit raster path (/science/<INST>/...),
+            // then INST, then the instrument detected from identification.
+            const char *pszInstOpt = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
+            std::string sInst = pszInstOpt ? pszInstOpt : poDS->m_sInst;
+            if (pszSubdatasetPath != nullptr && STARTS_WITH_CI(pszSubdatasetPath, "/science/")) {
+                const char *pszInstStart = pszSubdatasetPath + strlen("/science/");
+                const char *pszInstEnd = strchr(pszInstStart, '/');
+                const std::string sPathInst(pszInstStart, pszInstEnd ? pszInstEnd - pszInstStart : strlen(pszInstStart));
+                if (!sPathInst.empty()) sInst = sPathInst;
+            }
+            for (auto &c : sInst) c = toupper(c);
+            poDS->m_sDumpRoot = sInst.empty() ? "/" : "/science/" + sInst;
+        }
+        if (poDS->m_sDumpRoot[0] != '/') poDS->m_sDumpRoot.insert(0, "/");
+        while (poDS->m_sDumpRoot.size() > 1 && poDS->m_sDumpRoot.back() == '/') poDS->m_sDumpRoot.pop_back();
+
+        if (poDS->m_sDumpRoot != "/" && (bExplicitRoot || poDS->m_bDumpEnabled)) {
+            H5E_auto2_t old_func_dump; void *old_client_data_dump;
+            H5Eget_auto2(H5E_DEFAULT, &old_func_dump, &old_client_data_dump);
+            H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+            const hid_t hDumpRoot = H5Gopen2(poDS->hHDF5, poDS->m_sDumpRoot.c_str(), H5P_DEFAULT);
+            if (hDumpRoot >= 0) H5Gclose(hDumpRoot);
+            H5Eset_auto2(H5E_DEFAULT, old_func_dump, old_client_data_dump);
+            if (hDumpRoot < 0) {
+                CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT '%s' is not an existing HDF5 group.", poDS->m_sDumpRoot.c_str());
+                delete poDS; return nullptr;
+            }
+        }
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: root='%s' mode=%s advertised=%d",
+                 poDS->m_sDumpRoot.c_str(), poDS->m_bDumpFull ? "FULL" : "HEADER",
+                 poDS->m_bDumpEnabled ? 1 : 0);
+    }
 
     const char *pathToOpen = nullptr;
     std::string sConstructedPath;

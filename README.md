@@ -163,6 +163,9 @@ argument of `gdal.OpenEx()` in Python.
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when warping the DEM onto a geocoded (L2/L3) grid. |
 | `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata, masked or absent. Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) / `.../metadata/geolocationGrid/<QUANTITY>` (L1) when only the file is given. Must be combined with `DEM_FILE`. |
+| `DUMP` | `YES` / `NO` | `NO` | Optional: advertise the `NISAR_DUMP` domain in the domain list (`gdalinfo -mdd all`). Not needed for `gdalinfo -mdd NISAR_DUMP`; never changes `SUBDATASETS`. See [Inspecting the full HDF5 hierarchy](#inspecting-the-full-hdf5-hierarchy--mdd-nisar_dump). |
+| `DUMP_ROOT` | HDF5 group path | `/science/<INST>` | Group where the `NISAR_DUMP` traversal starts; `/` dumps the whole file. Must exist. `<INST>` is the instrument of an explicit raster path, else `INST`, else the detected one. |
+| `DUMP_MODE` | `HEADER` / `FULL` | `HEADER` | `HEADER` prints objects, datatypes, dataspaces and attributes only; `FULL` also prints values of scalars and 1-D datasets up to `NISAR_DUMP_MAX_ELEMENTS` elements. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
 
 Example:
@@ -181,6 +184,8 @@ These are GDAL *configuration options*: set them as environment variables, with
 | `NISAR_PREFETCH_GRID` | `1` | Size (in blocks) of the square block grid that is fetched in a single request when a block is missing from the cache. `1` = fetch only the requested block (best for tile servers and small windows). Larger values (e.g. `24`) coalesce many chunks into one large range read, which is much faster for full-frame batch processing. |
 | `NISAR_MAX_MEGAFETCH_BYTES` | `16777216` (16 MiB) | Upper bound on the size of one coalesced ("mega-fetch") read. Prevents `NISAR_PREFETCH_GRID` from producing requests that are too large for the network or memory. |
 | `NISAR_MAX_VIRTUAL_OVR` | `16` | Largest decimation factor for which a virtual overview is synthesised (powers of two up to this value). Set to `1` to disable virtual overviews. |
+| `NISAR_DUMP_MAX_ELEMENTS` | `64` | Largest value (in elements) printed in the `NISAR_DUMP` domain: scalar / 1-D datasets in `DUMP_MODE=FULL`, and attributes in either mode. Anything bigger is reported as `DATA { (N elements, not printed) }`. |
+| `NISAR_DUMP_MAX_STRING_CHARS` | `2048` | Longest string value (in UTF-8 code points; never split mid-character) printed in the `NISAR_DUMP` domain before truncation with `...`. Also bounds how much of a string *dataset* is read: fixed-length strings are read through a memory type of this size (×4 bytes for UTF-8), and a variable-length string array whose payload exceeds `elements × (4 × cap + 1)` bytes is not read at all (`(variable-length string, N bytes, not printed)`). Variable-length string *attributes* and *scalar* variable-length string datasets are read whole. |
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar (`/tmp/nisar_kerchunk_<dataset>.json`) describing the HDF5 chunk map of the opened raster, for use with Zarr / xarray tooling. |
 | `GDAL_NUM_THREADS` | number of CPUs | Number of threads used to decompress chunks in parallel. `ALL_CPUS` or unset uses every hardware thread. |
 | `GDAL_HTTP_MAX_RETRY` | `5` (set by the driver if unset) | Number of retries GDAL performs on failed HTTP range requests. |
@@ -381,6 +386,73 @@ reference grid are reported as `NISAR_CUBE_PATH` / `NISAR_REFERENCE_GRID` metada
 The design is described in
 [L2 3D Data Cube Interpolation Implementation Plan.md](<L2 3D Data Cube Interpolation Implementation Plan.md>).
 
+### Inspecting the full HDF5 hierarchy (`-mdd NISAR_DUMP`)
+
+The default container listing shows only what the driver can open as a raster. To see the
+complete HDF5 contents of an L1/L2/L3 granule (groups, string and 1-D datasets, datatypes,
+dataspaces and attributes) in h5dump-like form, request the `NISAR_DUMP` metadata domain.
+No open option is required; the listing is built lazily when the domain is first read:
+
+```shell
+# headers only, from /science/LSAR (default root)
+gdalinfo -mdd NISAR_DUMP 'NISAR:"L2_GCOV.h5"'
+
+# one group, with values of scalars and small 1-D arrays
+gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL \
+    -oo DUMP_ROOT=/science/LSAR/identification 'NISAR:"L2_GCOV.h5"'
+
+# the whole file, including root attributes
+gdalinfo -mdd NISAR_DUMP -oo DUMP_ROOT=/ 'NISAR:"L1_RSLC.h5"'
+
+# DUMP=YES advertises the domain so that -mdd all includes it
+gdalinfo -mdd all -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
+```
+
+```
+Metadata (NISAR_DUMP):
+  HDF5 "L2_GCOV.h5" FULL {
+  GROUP "/science/LSAR/identification" {
+  DATASET "/science/LSAR/identification/productType" {
+     DATATYPE  H5T_STRING { STRSIZE 4; STRPAD H5T_STR_NULLTERM; CSET H5T_CSET_ASCII; CTYPE H5T_C_S1; }
+     DATASPACE  SCALAR
+     DATA { "GCOV" }
+     ATTRIBUTE "description" {
+        DATATYPE  H5T_STRING { STRSIZE 12; STRPAD H5T_STR_NULLTERM; CSET H5T_CSET_ASCII; CTYPE H5T_C_S1; }
+        DATASPACE  SCALAR
+        DATA { "Product type" }
+     }
+  }
+  DATASET "/science/LSAR/identification/listOfFrequencies" {
+     DATATYPE  H5T_STRING { STRSIZE 1; STRPAD H5T_STR_NULLTERM; CSET H5T_CSET_ASCII; CTYPE H5T_C_S1; }
+     DATASPACE  SIMPLE { ( 2 ) / ( 2 ) }
+     DATA { "A", "B" }
+  }
+  }
+  }
+```
+
+Each metadata entry is one line of text. Groups enclose their children as in h5dump
+(a group's `}` comes after its last descendant); object names are always absolute HDF5
+paths. `DUMP_MODE=HEADER` (default) never reads dataset values; `FULL` prints scalars and
+1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` (64) elements and reports larger arrays
+as `DATA { (N elements, not printed) }`, so rasters are never pulled. Attribute values are
+printed in both modes under the same element cap, with the same marker when exceeded.
+Normal `gdalinfo` output is unchanged: the domain is only traversed when requested, and only
+appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
+
+`DUMP_ROOT` scopes the `NISAR_DUMP` listing only; `SUBDATASETS` stays the openable-raster
+inventory of the detected instrument group and is not affected by any `DUMP*` option. String,
+compound, scalar and 1-D datasets therefore appear in the dump but never in `SUBDATASETS`.
+
+Soft and external links are listed h5dump-style (`SOFTLINK … { LINKTARGET … }`,
+`EXTERNAL_LINK … { TARGETFILE … TARGETPATH … }`) without being followed, and a second hard link to
+an already-dumped object prints `HARDLINK "first path"` instead of repeating its contents
+(current NISAR products have none of these).
+
+**Remote files:** the listing is built once, lazily, by a single `H5Lvisit` traversal that in
+HEADER mode touches object headers and attributes only (a few page-sized range requests; a
+full `/science/LSAR` walk of an RSLC or GUNW granule over HTTPS took 2-4 s in testing).
+
 ### Python (`osgeo.gdal`)
 
 ```python
@@ -402,6 +474,11 @@ band = ds.GetRasterBand(1)
 window = band.ReadAsArray(xoff=0, yoff=0, win_xsize=1024, win_ysize=1024)
 print(window.shape, band.GetNoDataValue(), ds.GetGeoTransform())
 print(ds.GetMetadata("NISAR_ORBIT"))
+
+# h5dump-style listing of one group
+dump = gdal.OpenEx("NISAR:L2_GCOV.h5",
+                   open_options=["DUMP_ROOT=/science/LSAR/identification"])
+print("\n".join(dump.GetMetadata_List("NISAR_DUMP")))
 ```
 
 ## Performance Notes
