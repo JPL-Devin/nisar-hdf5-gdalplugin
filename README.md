@@ -163,7 +163,7 @@ argument of `gdal.OpenEx()` in Python.
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when warping the DEM onto a geocoded (L2/L3) grid. |
 | `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata, masked or absent. Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) / `.../metadata/geolocationGrid/<QUANTITY>` (L1) when only the file is given. Must be combined with `DEM_FILE`. |
-| `DUMP` | `YES` / `NO` | `NO` | Expose an h5dump-style listing of the HDF5 hierarchy in the `NISAR_DUMP` metadata domain (`gdalinfo -mdd NISAR_DUMP`) and list non-raster (string, compound, scalar, 1-D) datasets in `SUBDATASETS` as `(<type>, not openable)`. See [Inspecting the full HDF5 hierarchy](#inspecting-the-full-hdf5-hierarchy-dumpyes). |
+| `DUMP` | `YES` / `NO` | `NO` | Optional: advertise the `NISAR_DUMP` domain in the domain list (`gdalinfo -mdd all`) and list non-raster (string, compound, scalar, 1-D) datasets in `SUBDATASETS` as `(<type>, not openable)`. Not needed for `gdalinfo -mdd NISAR_DUMP`. See [Inspecting the full HDF5 hierarchy](#inspecting-the-full-hdf5-hierarchy--mdd-nisar_dump). |
 | `DUMP_ROOT` | HDF5 group path | `/science/<INST>` | Group where the `NISAR_DUMP` traversal starts; `/` dumps the whole file. Must exist. |
 | `DUMP_MODE` | `HEADER` / `FULL` | `HEADER` | `HEADER` prints objects, datatypes, dataspaces and attributes only; `FULL` also prints values of scalars and 1-D datasets up to `NISAR_DUMP_MAX_ELEMENTS` elements. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
@@ -386,22 +386,27 @@ reference grid are reported as `NISAR_CUBE_PATH` / `NISAR_REFERENCE_GRID` metada
 The design is described in
 [L2 3D Data Cube Interpolation Implementation Plan.md](<L2 3D Data Cube Interpolation Implementation Plan.md>).
 
-### Inspecting the full HDF5 hierarchy (`DUMP=YES`)
+### Inspecting the full HDF5 hierarchy (`-mdd NISAR_DUMP`)
 
 The default container listing shows only what the driver can open as a raster. To see the
 complete HDF5 contents of an L1/L2/L3 granule (groups, string and 1-D datasets, datatypes,
-dataspaces and attributes) in h5dump-like form, request the `NISAR_DUMP` metadata domain:
+dataspaces and attributes) in h5dump-like form, request the `NISAR_DUMP` metadata domain.
+No open option is required; the listing is built lazily when the domain is first read:
 
 ```shell
 # headers only, from /science/LSAR (default root)
-gdalinfo -mdd NISAR_DUMP -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
+gdalinfo -mdd NISAR_DUMP 'NISAR:"L2_GCOV.h5"'
 
 # one group, with values of scalars and small 1-D arrays
-gdalinfo -mdd NISAR_DUMP -oo DUMP=YES -oo DUMP_MODE=FULL \
+gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL \
     -oo DUMP_ROOT=/science/LSAR/identification 'NISAR:"L2_GCOV.h5"'
 
 # the whole file, including root attributes
-gdalinfo -mdd NISAR_DUMP -oo DUMP=YES -oo DUMP_ROOT=/ 'NISAR:"L1_RSLC.h5"'
+gdalinfo -mdd NISAR_DUMP -oo DUMP_ROOT=/ 'NISAR:"L1_RSLC.h5"'
+
+# DUMP=YES advertises the domain (so -mdd all includes it) and lists
+# non-raster datasets in SUBDATASETS
+gdalinfo -mdd all -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
 ```
 
 ```
@@ -430,8 +435,8 @@ Metadata (NISAR_DUMP):
 Each metadata entry is one line of text. `DUMP_MODE=HEADER` (default) never reads dataset
 values; `FULL` prints scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` (64)
 elements and reports larger arrays as `DATA { (N elements, not printed) }`, so rasters are
-never pulled. Asking for `-mdd NISAR_DUMP` without `-oo DUMP=YES` prints a warning and no
-listing; normal `gdalinfo` output is unchanged unless the option is given.
+never pulled. Normal `gdalinfo` output is unchanged: the domain is only traversed when
+requested, and only appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
 
 **Remote files:** the listing is built once, lazily, by a single `H5Ovisit` traversal that in
 HEADER mode touches object headers and attributes only (a few page-sized range requests; a
@@ -461,7 +466,7 @@ print(ds.GetMetadata("NISAR_ORBIT"))
 
 # h5dump-style listing of one group
 dump = gdal.OpenEx("NISAR:L2_GCOV.h5",
-                   open_options=["DUMP=YES", "DUMP_ROOT=/science/LSAR/identification"])
+                   open_options=["DUMP_ROOT=/science/LSAR/identification"])
 print("\n".join(dump.GetMetadata_List("NISAR_DUMP")))
 ```
 

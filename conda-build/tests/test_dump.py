@@ -1,8 +1,9 @@
 """
 NISAR_DUMP metadata-domain tests for the NISAR GDAL driver.
 
-Exercises `-oo DUMP=YES` (h5dump-style listing exposed through the NISAR_DUMP
-metadata domain) in container mode on one granule per product level:
+Exercises the NISAR_DUMP metadata domain (h5dump-style listing, available on
+request without any open option; `-oo DUMP=YES` advertises it and adds
+non-raster datasets to SUBDATASETS) in container mode on one granule per product level:
 L1 RSLC, L2 GUNW, L2 GCOV and L3 SME2.
 
 Granules are located through NASA Earthdata (CMR) with earthaccess and read
@@ -144,8 +145,6 @@ def test_open_options_registered():
 def test_default_without_dump(granules, product):
     ds = _open(granules, product)
     assert "NISAR_DUMP" not in ds.GetMetadataDomainList()
-    with gdal.quiet_errors():
-        assert not ds.GetMetadata_List("NISAR_DUMP")
     sub = ds.GetMetadata("SUBDATASETS")
     descs = [v for k, v in sub.items() if k.endswith("_DESC")]
     assert descs
@@ -186,6 +185,23 @@ def test_header_dump(granules, product):
     block = lines[idx:idx + 12]
     assert not any(l.startswith("   DATA {") for l in block)
     assert any(l.startswith("      DATA {") for l in block)  # attribute value
+
+
+@pytest.mark.parametrize("product", PRODUCTS)
+def test_dump_without_dump_option(granules, product):
+    """-mdd NISAR_DUMP works without DUMP=YES (domain just isn't advertised)."""
+    ds = _open(granules, product)
+    assert "NISAR_DUMP" not in ds.GetMetadataDomainList()
+    lines = _dump(ds)
+    assert lines[0].endswith(" HEADER {") and lines[-1] == "}"
+    assert IDENT in _objects(lines, "GROUP")
+    assert f"{IDENT}/productType" in _objects(lines, "DATASET")
+
+    ds = _open(granules, product, DUMP_MODE="FULL", DUMP_ROOT=IDENT)
+    lines = _dump(ds)
+    assert lines[0].endswith(" FULL {")
+    assert all(p.startswith(IDENT) for p in _objects(lines, "GROUP") + _objects(lines, "DATASET"))
+    assert any(l.startswith("   DATA {") for l in lines)
 
 
 @pytest.mark.parametrize("product", PRODUCTS)

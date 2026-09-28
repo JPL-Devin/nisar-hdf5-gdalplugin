@@ -1783,12 +1783,8 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
     // Handle NISAR_DUMP Domain (h5dump-style listing, lazily built)
     if (pszDomain != nullptr && EQUAL(pszDomain, "NISAR_DUMP"))
     {
-        if (!m_bDumpEnabled)
-        {
-            CPLError(CE_Warning, CPLE_AppDefined,
-                     "NISAR_DUMP metadata domain requires the DUMP=YES open option.");
+        if (hHDF5 < 0)
             return nullptr;
-        }
         std::lock_guard<std::mutex> lock(m_DumpMetadataMutex);
         if (!m_bGotDumpMetadata)
         {
@@ -2974,8 +2970,11 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     // ====================================================================
     // DUMP / DUMP_ROOT / DUMP_MODE (NISAR_DUMP metadata domain)
     // ====================================================================
+    // The NISAR_DUMP domain is always available on request (gdalinfo -mdd NISAR_DUMP);
+    // DUMP=YES additionally advertises it in the domain list and includes non-raster
+    // datasets in SUBDATASETS.
     poDS->m_bDumpEnabled = CPLFetchBool(poOpenInfo->papszOpenOptions, "DUMP", false);
-    if (poDS->m_bDumpEnabled) {
+    {
         const char *pszDumpMode = CSLFetchNameValueDef(poOpenInfo->papszOpenOptions, "DUMP_MODE", "HEADER");
         if (EQUAL(pszDumpMode, "FULL")) {
             poDS->m_bDumpFull = true;
@@ -2985,7 +2984,8 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         }
 
         const char *pszDumpRoot = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DUMP_ROOT");
-        if (pszDumpRoot && pszDumpRoot[0] != '\0') {
+        const bool bExplicitRoot = pszDumpRoot && pszDumpRoot[0] != '\0';
+        if (bExplicitRoot) {
             poDS->m_sDumpRoot = pszDumpRoot;
         } else {
             const char *pszInstOpt = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
@@ -2996,7 +2996,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         if (poDS->m_sDumpRoot[0] != '/') poDS->m_sDumpRoot.insert(0, "/");
         while (poDS->m_sDumpRoot.size() > 1 && poDS->m_sDumpRoot.back() == '/') poDS->m_sDumpRoot.pop_back();
 
-        if (poDS->m_sDumpRoot != "/") {
+        if (poDS->m_sDumpRoot != "/" && (bExplicitRoot || poDS->m_bDumpEnabled)) {
             H5E_auto2_t old_func_dump; void *old_client_data_dump;
             H5Eget_auto2(H5E_DEFAULT, &old_func_dump, &old_client_data_dump);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
@@ -3008,8 +3008,9 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                 delete poDS; return nullptr;
             }
         }
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP enabled: root='%s' mode=%s",
-                 poDS->m_sDumpRoot.c_str(), poDS->m_bDumpFull ? "FULL" : "HEADER");
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: root='%s' mode=%s advertised=%d",
+                 poDS->m_sDumpRoot.c_str(), poDS->m_bDumpFull ? "FULL" : "HEADER",
+                 poDS->m_bDumpEnabled ? 1 : 0);
     }
 
     const char *pathToOpen = nullptr;
