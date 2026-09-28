@@ -133,6 +133,28 @@ def _objects(lines, kind):
             for l in lines if l.startswith(prefix)]
 
 
+def _parents(lines):
+    """Map object path -> enclosing GROUP path, by walking the brace structure.
+
+    Object headers are unindented (`GROUP "p" {`, `DATASET "p" {`, ...) and a
+    bare `}` closes the innermost open one; body lines are indented.
+    Asserts the braces balance.
+    """
+    assert lines[0].startswith('HDF5 "') and lines[0].endswith(" {")
+    stack, parents = [], {}
+    for l in lines[1:-1]:
+        if l == "}":
+            stack.pop()
+        elif l and not l[0].isspace():
+            rest = l.split(" ", 1)[1]
+            path = rest[1:rest.index('"', 1)]
+            parents[path] = stack[-1] if stack else None
+            stack.append(path)
+    assert not stack, f"unclosed objects: {stack}"
+    assert lines[-1] == "}"
+    return parents
+
+
 # --------------------------------------------------------------------------
 # Default behaviour is untouched
 # --------------------------------------------------------------------------
@@ -177,6 +199,13 @@ def test_header_dump(granules, product):
     assert f"/science/LSAR/{product}" in groups
     assert f"{IDENT}/productType" in datasets
     assert all(p.startswith("/science/LSAR") for p in groups + datasets)
+
+    # groups enclose their children (h5dump nesting), braces balance
+    parents = _parents(lines)
+    assert parents["/science/LSAR"] is None
+    assert parents[IDENT] == "/science/LSAR"
+    assert parents[f"{IDENT}/productType"] == IDENT
+    assert parents[f"/science/LSAR/{product}"] == "/science/LSAR"
 
     # datatype / dataspace / attribute lines are present
     assert any(l.strip().startswith("DATATYPE  H5T_STRING") for l in lines)
@@ -234,10 +263,20 @@ def test_dump_root_scoping(granules, product):
 
 def test_dump_root_file_root(granules):
     ds = _open(granules, "GCOV", DUMP="YES", DUMP_ROOT="/")
-    groups = _objects(_dump(ds), "GROUP")
+    lines = _dump(ds)
+    groups = _objects(lines, "GROUP")
     assert groups[0] == "/"
     assert "/science" in groups
     assert "/science/LSAR" in groups
+    parents = _parents(lines)
+    assert parents["/"] is None
+    assert parents["/science"] == "/"
+    assert parents["/science/LSAR"] == "/science"
+
+
+def test_dump_root_empty_rejected(granules):
+    with pytest.raises(RuntimeError):
+        _open(granules, "GCOV", DUMP_ROOT="")
 
 
 def test_dump_root_missing(granules):

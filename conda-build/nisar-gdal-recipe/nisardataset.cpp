@@ -2302,7 +2302,29 @@ struct NISAR_DumpVisitData
     char **papszLines;      // CSL list of output lines
     size_t nMaxElements;    // element cap for printed DATA blocks
     size_t nMaxStringChars; // per-string cap for printed values
+    std::vector<std::string> aosOpenGroups; // groups whose '}' is still pending
 };
+
+static bool NisarDumpIsUnder(const std::string &sParent, const std::string &sPath)
+{
+    if (sPath.size() <= sParent.size() ||
+        sPath.compare(0, sParent.size(), sParent) != 0)
+        return false;
+    return sParent == "/" || sPath[sParent.size()] == '/';
+}
+
+// Emits the closing brace of every open group that does not contain sPath
+// (H5Ovisit is pre-order, so leaving a subtree means moving to a sibling or
+// ancestor). An empty sPath closes everything.
+static void NisarDumpCloseGroups(NISAR_DumpVisitData *data, const std::string &sPath)
+{
+    while (!data->aosOpenGroups.empty() &&
+           (sPath.empty() || !NisarDumpIsUnder(data->aosOpenGroups.back(), sPath)))
+    {
+        data->papszLines = CSLAddString(data->papszLines, "}");
+        data->aosOpenGroups.pop_back();
+    }
+}
 
 // Quotes at most nMax characters of sIn. nStorageSize > 0 means sIn is a
 // bounded read of a fixed-length string of that declared size, so the
@@ -2613,7 +2635,12 @@ static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrNam
     NISAR_DumpVisitData *data = static_cast<NISAR_DumpVisitData *>(pOpData);
 
     hid_t hAttr = H5Aopen(hLocation, pszAttrName, H5P_DEFAULT);
-    if (hAttr < 0) return 0;
+    if (hAttr < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Aopen('%s') failed; aborting traversal.",
+                 pszAttrName);
+        return H5_ITER_ERROR;
+    }
     hid_t hType = H5Aget_type(hAttr);
     hid_t hSpace = H5Aget_space(hAttr);
 
@@ -2667,6 +2694,9 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
                  sPath.c_str());
         return H5_ITER_ERROR;
     }
+
+    NisarDumpCloseGroups(data, sPath);
+    const bool bIsGroup = (info->type == H5O_TYPE_GROUP);
 
     switch (info->type)
     {
@@ -2744,7 +2774,12 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
     const herr_t eAttr = H5Aiterate2(hObj, H5_INDEX_NAME, H5_ITER_NATIVE, &idx,
                                      NisarDumpAttributeCallback, data);
 
-    data->papszLines = CSLAddString(data->papszLines, "}");
+    // A group's '}' is deferred until the visit leaves its subtree so that
+    // children are nested inside it, as in h5dump.
+    if (bIsGroup)
+        data->aosOpenGroups.push_back(sPath);
+    else
+        data->papszLines = CSLAddString(data->papszLines, "}");
     H5Oclose(hObj);
     if (eAttr < 0)
     {
@@ -2795,6 +2830,7 @@ bool NisarDataset::LoadDumpMetadata()
         }
         else
         {
+            NisarDumpCloseGroups(&data, std::string());
             data.papszLines = CSLAddString(data.papszLines, "}");
             bOk = true;
         }
@@ -3006,7 +3042,11 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         }
 
         const char *pszDumpRoot = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DUMP_ROOT");
-        const bool bExplicitRoot = pszDumpRoot && pszDumpRoot[0] != '\0';
+        const bool bExplicitRoot = pszDumpRoot != nullptr;
+        if (bExplicitRoot && pszDumpRoot[0] == '\0') {
+            CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT must name an HDF5 group (use / for the whole file).");
+            delete poDS; return nullptr;
+        }
         if (bExplicitRoot) {
             poDS->m_sDumpRoot = pszDumpRoot;
         } else {

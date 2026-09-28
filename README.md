@@ -413,7 +413,6 @@ gdalinfo -mdd all -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
 Metadata (NISAR_DUMP):
   HDF5 "L2_GCOV.h5" FULL {
   GROUP "/science/LSAR/identification" {
-  }
   DATASET "/science/LSAR/identification/productType" {
      DATATYPE  H5T_STRING { STRSIZE 4; STRPAD H5T_STR_NULLTERM; CSET H5T_CSET_ASCII; CTYPE H5T_C_S1; }
      DATASPACE  SCALAR
@@ -430,13 +429,16 @@ Metadata (NISAR_DUMP):
      DATA { "A", "B" }
   }
   }
+  }
 ```
 
-Each metadata entry is one line of text. `DUMP_MODE=HEADER` (default) never reads dataset
-values; `FULL` prints scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` (64)
-elements and reports larger arrays as `DATA { (N elements, not printed) }`, so rasters are
-never pulled. Normal `gdalinfo` output is unchanged: the domain is only traversed when
-requested, and only appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
+Each metadata entry is one line of text. Groups enclose their children as in h5dump
+(a group's `}` comes after its last descendant); object names are always absolute HDF5
+paths. `DUMP_MODE=HEADER` (default) never reads dataset values; `FULL` prints scalars and
+1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` (64) elements and reports larger arrays
+as `DATA { (N elements, not printed) }`, so rasters are never pulled. Normal `gdalinfo`
+output is unchanged: the domain is only traversed when requested, and only appears in the
+domain list (`-mdd all`) with `-oo DUMP=YES`.
 
 `DUMP_ROOT` scopes the `NISAR_DUMP` listing only. The `SUBDATASETS` inventory that
 `DUMP=YES` expands is always the detected instrument group (`/science/LSAR` or

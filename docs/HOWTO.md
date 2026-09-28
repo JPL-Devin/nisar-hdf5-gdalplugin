@@ -409,8 +409,17 @@ The traversal starts at `DUMP_ROOT` (default `/science/<INST>`; `/` is the file 
 ```
 Metadata (NISAR_DUMP):
   HDF5 "…/NISAR_L2_PR_GCOV_….h5" HEADER {
-  GROUP "/science/LSAR/identification" {
+  GROUP "/science/LSAR" {
+  GROUP "/science/LSAR/GCOV" {
+  …
+  DATASET "/science/LSAR/GCOV/grids/frequencyA/HHHH" {
+     DATATYPE  H5T_IEEE_F32LE  (GDAL Float32)
+     DATASPACE  SIMPLE { ( 4320, 4392 ) / ( 4320, 4392 ) }
+     …
   }
+  …
+  }
+  GROUP "/science/LSAR/identification" {
   DATASET "/science/LSAR/identification/absoluteOrbitNumber" {
      DATATYPE  H5T_STD_U32LE  (GDAL UInt32)
      DATASPACE  SCALAR
@@ -420,13 +429,14 @@ Metadata (NISAR_DUMP):
         DATA { "Absolute orbit number" }
      }
   }
-  DATASET "/science/LSAR/GCOV/grids/frequencyA/HHHH" {
-     DATATYPE  H5T_IEEE_F32LE  (GDAL Float32)
-     DATASPACE  SIMPLE { ( 4320, 4392 ) / ( 4320, 4392 ) }
-     …
+  …
+  }
+  …
   }
   }
 ```
+
+Groups enclose their children as in h5dump (a group's `}` follows its last descendant, so the closing braces pile up at the end of each subtree); every object name is an absolute HDF5 path, so lines are meaningful on their own when grepping.
 
 `DUMP_MODE=HEADER` (default) prints object headers, datatypes, dataspaces and attributes, including attribute values, but never reads dataset values. `DUMP_MODE=FULL` adds a `DATA { … }` line for scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` elements (config option, default 64); anything larger is reported as `DATA { (N elements, not printed) }`, so a FULL dump never pulls raster pixels. Strings longer than `NISAR_DUMP_MAX_STRING_CHARS` (default 2048) are truncated with `...`.
 
@@ -434,7 +444,7 @@ Metadata (NISAR_DUMP):
 
 The two views are scoped differently: `SUBDATASETS` is always built from the detected instrument group (`/science/LSAR` or `/science/SSAR`) and ignores `DUMP_ROOT`, whereas `NISAR_DUMP` follows `DUMP_ROOT`. With the default root they cover the same objects; with `DUMP_ROOT=/` the dump additionally shows root-level attributes and any groups outside `/science/<INST>` that never appear in `SUBDATASETS`, and with a narrower root the dump is a subset of the inventory.
 
-An explicit `DUMP_ROOT` must name an existing HDF5 *group* (not a dataset) or the open fails; an invalid `DUMP_MODE` also fails the open.
+An explicit `DUMP_ROOT` must name an existing HDF5 *group* (not a dataset, not empty) or the open fails; an invalid `DUMP_MODE` also fails the open.
 
 **Remote files.** The listing is built lazily, the first time the `NISAR_DUMP` domain is read, and cached. In HEADER mode it reads object headers and attributes only, which on a remote granule means a handful of page-sized range requests (*observed*: 2-4 s over HTTPS for a full `/science/LSAR` walk of an RSLC or GUNW granule, on top of the normal open). FULL mode additionally reads the small datasets it prints; large arrays are still skipped.
 
