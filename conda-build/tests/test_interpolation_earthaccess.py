@@ -1,3 +1,8 @@
+# Copyright 2025, by the California Institute of Technology.
+# ALL RIGHTS RESERVED. United States Government Sponsorship acknowledged.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Metadata-cube interpolation tests for the NISAR GDAL driver, driven by earthaccess.
 
