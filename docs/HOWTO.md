@@ -387,10 +387,53 @@ Each requested group appears as a domain named `NISAR_<GROUP>`. The metadata dom
 | default | Container: root attributes plus the `identification` scalars keyed by full path. Raster: the dataset's HDF5 attributes plus frequency-group scalars. |
 | `NISAR_GLOBAL` | Root-level HDF5 attributes (CF-style discovery attributes such as `title`, `institution`, `reference_document`). |
 | `SUBDATASETS` | Container only. |
+| `NISAR_DUMP` | Only with `-oo DUMP=YES`: h5dump-style listing of the HDF5 hierarchy under `DUMP_ROOT` (section 5.3.1). |
 | `DERIVED_SUBDATASETS` | Numeric rasters only; see section 10. |
 | `NISAR_ATTITUDE`, `NISAR_CALIBRATIONINFORMATION`, `NISAR_CEOSANALYSISREADYDATA`, `NISAR_ORBIT`, `NISAR_PROCESSINGINFORMATION`, `NISAR_RADARGRID`, `NISAR_SOURCEDATA` | Only when requested with `METADATA=`. |
 
 Useful items surfaced this way include the identification block (`granuleId`, `productType`, `productVersion`, `productSpecificationVersion`), the processing information including the ISCE3 software version that generated the product, and the pointer to the companion static-layers granule (section 7.7).
+
+## 5.3.1 Dumping the whole HDF5 hierarchy (`DUMP=YES`)
+
+When you need to see *everything* in a granule, including string datasets, 1-D arrays, named datatypes and every HDF5 attribute, rather than only what the driver turns into rasters and metadata items, ask for an h5dump-style listing. It is opt-in and lives in its own metadata domain, so it changes nothing unless requested:
+
+```
+gdalinfo -mdd NISAR_DUMP -oo DUMP=YES NISAR:"$GCOV"                                    # /science/LSAR, headers only
+gdalinfo -mdd NISAR_DUMP -oo DUMP=YES -oo DUMP_ROOT=/science/LSAR/identification NISAR:"$GCOV"
+gdalinfo -mdd NISAR_DUMP -oo DUMP=YES -oo DUMP_MODE=FULL -oo DUMP_ROOT=/ NISAR:"$RSLC"    # whole file, with small values
+```
+
+The traversal starts at `DUMP_ROOT` (default `/science/<INST>`; `/` is the file root) and visits objects in one `H5Ovisit` pass. Each line of the domain is one line of h5dump-like text:
+
+```
+Metadata (NISAR_DUMP):
+  HDF5 "…/NISAR_L2_PR_GCOV_….h5" HEADER {
+  GROUP "/science/LSAR/identification" {
+  }
+  DATASET "/science/LSAR/identification/absoluteOrbitNumber" {
+     DATATYPE  H5T_STD_U32LE  (GDAL UInt32)
+     DATASPACE  SCALAR
+     ATTRIBUTE "description" {
+        DATATYPE  H5T_STRING { STRSIZE 21; STRPAD H5T_STR_NULLPAD; CSET H5T_CSET_ASCII; CTYPE H5T_C_S1; }
+        DATASPACE  SCALAR
+        DATA { "Absolute orbit number" }
+     }
+  }
+  DATASET "/science/LSAR/GCOV/grids/frequencyA/HHHH" {
+     DATATYPE  H5T_IEEE_F32LE  (GDAL Float32)
+     DATASPACE  SIMPLE { ( 4320, 4392 ) / ( 4320, 4392 ) }
+     …
+  }
+  }
+```
+
+`DUMP_MODE=HEADER` (default) prints object headers, datatypes, dataspaces and attributes, including attribute values, but never reads dataset values. `DUMP_MODE=FULL` adds a `DATA { … }` line for scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` elements (config option, default 64); anything larger is reported as `DATA { (N elements, not printed) }`, so a FULL dump never pulls raster pixels. Strings longer than `NISAR_DUMP_MAX_STRING_CHARS` (default 2048) are truncated with `...`.
+
+With `DUMP=YES` the container's `SUBDATASETS` listing also stops filtering: string, compound, scalar and 1-D datasets are listed so the inventory matches the HDF5 contents, with their `_DESC` ending in `(<type>, not openable)`. Those entries cannot be opened as rasters; they are there for orientation only.
+
+Asking for the domain without the option (`gdalinfo -mdd NISAR_DUMP NISAR:"$GCOV"`) prints a warning and no listing, and `DUMP_ROOT` must name an existing group or the open fails.
+
+**Remote files.** The listing is built lazily, the first time the `NISAR_DUMP` domain is read, and cached. In HEADER mode it reads object headers and attributes only, which on a remote granule means a handful of page-sized range requests (*observed*: 2-4 s over HTTPS for a full `/science/LSAR` walk of an RSLC or GUNW granule, on top of the normal open). FULL mode additionally reads the small datasets it prints; large arrays are still skipped.
 
 ## 5.4 Statistics: know what `-stats` actually returns
 
@@ -437,7 +480,7 @@ NISAR_DRIVER: Successfully imported EPSG:32612.
 
 ## 5.7 The granule footprint
 
-The bounding polygon lives at `/science/LSAR/identification/boundingPolygon` as an HDF5 string scalar, not a raster. The driver builds GDAL raster bands from numeric arrays only, so string datasets are skipped by the subdataset listing and cannot be opened as a dataset.
+The bounding polygon lives at `/science/LSAR/identification/boundingPolygon` as an HDF5 string scalar, not a raster. The driver builds GDAL raster bands from numeric arrays only, so string datasets are skipped by the subdataset listing (unless `DUMP=YES`, section 5.3.1) and cannot be opened as a dataset.
 
 The driver does read the value into the container's default metadata domain, keyed by its full path, so retrieve it as a metadata item:
 
@@ -470,6 +513,9 @@ Open options are passed as `-oo KEY=VALUE` and may be repeated; every GDAL utili
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling used when warping the DEM onto a geocoded (L2/L3) target grid. Not used on Level 1, where the DEM is sampled bilinearly at each solved ground point. |
 | `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 only: height assumed where the DEM is nodata, masked or has no coverage (e.g. ocean). Must be finite (`nan`/`inf` are rejected). |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | none | Its presence routes the open to the cube-interpolation dataset (section 7.6). With a bare `NISAR:"file.h5"` the cube is resolved to `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) or `.../metadata/geolocationGrid/<QUANTITY>` (L1); an explicit HDF5 path in the connection string overrides it. The reference grid follows `INST`/`FREQ`/`POL`. |
+| `DUMP` | `YES`, `NO` | `NO` | Expose an h5dump-style listing of the HDF5 hierarchy in the `NISAR_DUMP` metadata domain and list non-raster datasets in `SUBDATASETS`. Pair with `gdalinfo -mdd NISAR_DUMP`. Section 5.3.1. |
+| `DUMP_ROOT` | HDF5 group path | `/science/<INST>` | Where the dump traversal starts; `/` dumps the whole file. Must exist. |
+| `DUMP_MODE` | `HEADER`, `FULL` | `HEADER` | `HEADER` prints objects, datatypes, dataspaces and attributes; `FULL` also prints values of scalars and 1-D datasets up to `NISAR_DUMP_MAX_ELEMENTS` elements. |
 | `ENABLE_PAGE_BUFFERING` | `YES`, `NO` | `NO` | Reserved. The driver always uses a 4 MiB HDF5 page buffer; this option has no other effect today. |
 
 There are **no `LAYER` or `MEASURE` options**. Earlier drafts of this guide described them; they do not exist in the driver. GUNW, GOFF, RIFG and RUNW layers are addressed by full HDF5 path (section 7.4).

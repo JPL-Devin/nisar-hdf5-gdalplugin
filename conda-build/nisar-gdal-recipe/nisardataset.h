@@ -117,11 +117,15 @@ class NisarDataset final : public GDALPamDataset
     mutable OGRSpatialReference *m_poSRS = nullptr;  // Cached SRS object
     // Cached list for global attrs
     mutable char **m_papszGlobalMetadata = nullptr;
+    // Cached h5dump-style listing (NISAR_DUMP domain)
+    mutable bool m_bGotDumpMetadata = false;
+    mutable char **m_papszDumpMetadata = nullptr;
 
     // Mutexes (Declare together, last among cached members)
     mutable std::mutex m_SRSMutex;
     mutable std::mutex m_GlobalMetadataMutex;
     mutable std::mutex m_MetadataMutex;
+    mutable std::mutex m_DumpMetadataMutex;
 
     // Product identification
     std::string m_sProductType; // e.g., "GSLC", "RSLC"
@@ -134,6 +138,9 @@ class NisarDataset final : public GDALPamDataset
     std::string m_sFreq; // A or B
     std::string m_sPol;  // HH, HV, etc.
     bool m_bMaskEnabled = false; //Default to NO
+    bool m_bDumpEnabled = false;   // DUMP=YES
+    std::string m_sDumpRoot;       // DUMP_ROOT (HDF5 group path)
+    bool m_bDumpFull = false;      // DUMP_MODE=FULL
 
   private:  // Keep static helpers private if only used internally
     struct MetadataCategory {
@@ -148,10 +155,12 @@ class NisarDataset final : public GDALPamDataset
     // Static callback for H5Ovisit
     static herr_t MetadataVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
 
+    void LoadDumpMetadata();
+    static herr_t DumpVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
+
     void ReadIdentificationMetadata();
     std::string ReadHDF5StringArrayAsList(hid_t hParentGroup, const char *pszDatasetName);
     std::string ReadHDF5StringDataset(hid_t hParentGroup, const char *pszDatasetName);
-    static GDALDataType GetGDALDataType(hid_t hH5Type);
 
     CPLErr ReadGeoTransformAttribute(hid_t hObjectID, const char *pszAttrName,
                                      GDALGeoTransform &gt) const;
@@ -161,6 +170,7 @@ class NisarDataset final : public GDALPamDataset
     ~NisarDataset() override;
 
     static int Identify(GDALOpenInfo *poOpenInfo);
+    static GDALDataType GetGDALDataType(hid_t hH5Type);
 
     static GDALDataset *Open(GDALOpenInfo *);
 
