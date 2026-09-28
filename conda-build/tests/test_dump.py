@@ -427,6 +427,7 @@ def test_string_cap_respects_utf8(tmp_path):
         meta = f.create_group(f"{root}/metadata")
         meta.create_dataset("vlen", data=text, dtype=h5py.string_dtype("utf-8"))
         meta.create_dataset("vlen1d", data=[text, "x"], dtype=h5py.string_dtype("utf-8"))
+        meta.create_dataset("vlenbig", data=["x" * 100], dtype=h5py.string_dtype("utf-8"))
         meta.create_dataset("fixed", data=text.encode(),
                             dtype=h5py.string_dtype("utf-8", len(text.encode())))
         meta.attrs.create("attr", text, dtype=h5py.string_dtype("utf-8"))
@@ -441,19 +442,22 @@ def test_string_cap_respects_utf8(tmp_path):
     full = value_lines(64)
     assert sum(f'"{text}"' in ln for ln in full) == 4
     assert f'DATA {{ "{text}", "x" }}' in full
+    assert 'DATA { "' + "x" * 64 + '..." (100 chars) }' in full
 
     capped = value_lines(1)
-    assert len(capped) == 4
-    # 10 VL bytes exceed the 2 * (1 + 1) byte budget of the rank-1 dataset.
-    capped.remove("DATA { (variable-length string, 10 bytes, not printed) }")
+    assert len(capped) == 5
+    # 101 VL bytes exceed the 1 * (4 * 1 + 1) byte budget; the rank-1 dataset
+    # (10 bytes, budget 2 * 5) still fits although 'é' is two bytes.
+    capped.remove("DATA { (variable-length string, 101 bytes, not printed) }")
     for ln in capped:
         assert "\u00e9..." in ln                       # cut after the whole 'é'
         assert "\ufffd" not in ln                      # no replacement char
-    assert sum("(6 chars)" in ln for ln in capped) == 2  # code points, not bytes
+    assert 'DATA { "\u00e9..." (6 chars), "x" }' in capped
+    assert sum("(6 chars)" in ln for ln in capped) == 3  # code points, not bytes
     assert sum("(STRSIZE 7)" in ln for ln in capped) == 1  # bounded fixed-length read
 
     # The whole 'é' also survives when the cap lands exactly after it.
-    assert sum("\u00e9c..." in ln for ln in value_lines(2)) == 3
+    assert sum("\u00e9c..." in ln for ln in value_lines(2)) == 4
 
 
 def test_default_dump_root_follows_raster_instrument(tmp_path):

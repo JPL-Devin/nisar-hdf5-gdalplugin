@@ -19,6 +19,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <limits>
 #include <thread>
 
 
@@ -2577,12 +2578,21 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
             H5Tset_cset(hMem, H5Tget_cset(hType));
             // Variable-length strings are materialized whole by H5Dread, so
             // ask HDF5 for the total payload first (this reads the sequence
-            // lengths, not the heap data) and refuse to read past the cap.
-            // H5Dvlen_get_buf_size crashes on scalar dataspaces (HDF5 2.2),
-            // so a scalar VL string is read whole like an attribute.
+            // lengths, not the heap data) and refuse to read past the byte
+            // budget: up to 4 UTF-8 bytes per printable character plus a
+            // terminator per element (NisarDumpQuote enforces the character
+            // cap itself). H5Dvlen_get_buf_size crashes on scalar dataspaces
+            // (HDF5 2.2), so a scalar VL string is read whole like an attribute.
             hsize_t nVlenBytes = 0;
+            constexpr hsize_t nMaxH = std::numeric_limits<hsize_t>::max();
+            const hsize_t nBytesPerElement =
+                nMaxStringChars >= (nMaxH - 1) / 4
+                    ? nMaxH
+                    : static_cast<hsize_t>(nMaxStringChars) * 4 + 1;
             const hsize_t nVlenCap =
-                static_cast<hsize_t>(nCount) * (nMaxStringChars + 1);
+                nCount > nMaxH / nBytesPerElement
+                    ? nMaxH
+                    : static_cast<hsize_t>(nCount) * nBytesPerElement;
             if (!bIsAttr && H5Sget_simple_extent_type(hSpace) != H5S_SCALAR &&
                 H5Dvlen_get_buf_size(hObj, hMem, hSpace, &nVlenBytes) >= 0 &&
                 nVlenBytes > nVlenCap)
