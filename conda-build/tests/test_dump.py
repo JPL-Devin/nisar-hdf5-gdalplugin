@@ -398,3 +398,81 @@ def test_links_and_aliases(tmp_path):
         f'GROUP "{root}/metadataAlias" {{', f'   HARDLINK "{root}/metadata"', "}"]
     assert _objects(lines, "DATASET").count(f"{root}/metadataAlias/values") == 0
     assert _parents(lines)[f"{root}/soft"] == root
+
+
+def _synthetic_granule(path, h5py, inst="LSAR"):
+    import numpy as np
+
+    root = f"/science/{inst}/RSLC"
+    with h5py.File(path, "a") as f:
+        ident = f.create_group(f"/science/{inst}/identification")
+        ident.create_dataset("productType", data=np.bytes_(b"RSLC"))
+        ident.create_dataset("productLevel", data=np.bytes_(b"L1"))
+        f.create_dataset(f"{root}/swaths/frequencyA/HH",
+                         data=np.zeros((4, 4), dtype=np.float32))
+    return root
+
+
+def test_string_cap_respects_utf8(tmp_path):
+    """NISAR_DUMP_MAX_STRING_CHARS counts code points and never splits a
+    multibyte UTF-8 sequence, for variable-length strings, attributes and
+    the bounded read of fixed-length strings alike."""
+    h5py = pytest.importorskip("h5py")
+    import numpy as np
+
+    path = tmp_path / "utf8.h5"
+    root = _synthetic_granule(path, h5py)
+    text = "\u00e9clair"                                   # 'é' is 2 bytes
+    with h5py.File(path, "a") as f:
+        meta = f.create_group(f"{root}/metadata")
+        meta.create_dataset("vlen", data=text, dtype=h5py.string_dtype("utf-8"))
+        meta.create_dataset("vlen1d", data=[text, "x"], dtype=h5py.string_dtype("utf-8"))
+        meta.create_dataset("fixed", data=text.encode(),
+                            dtype=h5py.string_dtype("utf-8", len(text.encode())))
+        meta.attrs.create("attr", text, dtype=h5py.string_dtype("utf-8"))
+
+    def value_lines(cap):
+        with gdal.config_option("NISAR_DUMP_MAX_STRING_CHARS", str(cap)):
+            ds = gdal.OpenEx(f'NISAR:"{path}"', gdal.OF_RASTER,
+                             open_options=[f"DUMP_ROOT={root}/metadata", "DUMP_MODE=FULL"])
+            lines = _dump(ds)
+        return [ln.strip() for ln in lines if ln.lstrip().startswith("DATA {")]
+
+    full = value_lines(64)
+    assert sum(f'"{text}"' in ln for ln in full) == 4
+    assert f'DATA {{ "{text}", "x" }}' in full
+
+    capped = value_lines(1)
+    assert len(capped) == 4
+    # 10 VL bytes exceed the 2 * (1 + 1) byte budget of the rank-1 dataset.
+    capped.remove("DATA { (variable-length string, 10 bytes, not printed) }")
+    for ln in capped:
+        assert "\u00e9..." in ln                       # cut after the whole 'é'
+        assert "\ufffd" not in ln                      # no replacement char
+    assert sum("(6 chars)" in ln for ln in capped) == 2  # code points, not bytes
+    assert sum("(STRSIZE 7)" in ln for ln in capped) == 1  # bounded fixed-length read
+
+    # The whole 'é' also survives when the cap lands exactly after it.
+    assert sum("\u00e9c..." in ln for ln in value_lines(2)) == 3
+
+
+def test_default_dump_root_follows_raster_instrument(tmp_path):
+    """Opening an explicit raster path under the other instrument of a
+    dual-instrument granule dumps that instrument, not the detected default."""
+    h5py = pytest.importorskip("h5py")
+
+    path = tmp_path / "dual.h5"
+    _synthetic_granule(path, h5py, "LSAR")
+    sroot = _synthetic_granule(path, h5py, "SSAR")
+
+    def dump_root(desc, **oo):
+        ds = gdal.OpenEx(desc, gdal.OF_RASTER,
+                         open_options=[f"{k}={v}" for k, v in oo.items()])
+        assert ds is not None
+        return _dump(ds)[1]
+
+    assert dump_root(f'NISAR:"{path}"') == 'GROUP "/science/LSAR" {'
+    assert dump_root(f'NISAR:"{path}":{sroot}/swaths/frequencyA/HH') == \
+        'GROUP "/science/SSAR" {'
+    assert dump_root(f'NISAR:"{path}":{sroot}/swaths/frequencyA/HH',
+                     DUMP_ROOT="/science/LSAR") == 'GROUP "/science/LSAR" {'

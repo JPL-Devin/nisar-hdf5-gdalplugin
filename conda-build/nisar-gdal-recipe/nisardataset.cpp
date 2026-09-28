@@ -2337,26 +2337,53 @@ static void NisarDumpCloseGroups(NISAR_DumpVisitData *data, const std::string &s
     }
 }
 
-// Quotes at most nMax characters of sIn. nStorageSize > 0 means sIn is a
-// bounded read of a fixed-length string of that declared size, so the
+// Byte length of the UTF-8 sequence introduced by lead byte c (1 for ASCII
+// and for bytes that cannot start a sequence, which are passed through).
+static size_t NisarDumpUtf8SeqLen(unsigned char c)
+{
+    if (c >= 0xF0 && c <= 0xF7) return 4;
+    if (c >= 0xE0) return 3;
+    if (c >= 0xC0) return 2;
+    return 1;
+}
+
+static size_t NisarDumpUtf8Length(const std::string &s)
+{
+    size_t nChars = 0;
+    for (size_t i = 0; i < s.size(); i += NisarDumpUtf8SeqLen(static_cast<unsigned char>(s[i])))
+        ++nChars;
+    return nChars;
+}
+
+// Quotes at most nMax characters of sIn, cutting only on UTF-8 code-point
+// boundaries. nStorageSize > 0 means sIn is a bounded read of a fixed-length
+// string of that declared size (so it may end in a split code point), and the
 // truncation marker reports the STRSIZE instead of the (unknown) length.
 static std::string NisarDumpQuote(const std::string &sIn, size_t nMax,
                                   size_t nStorageSize = 0)
 {
     std::string sOut = "\"";
     size_t nUsed = 0;
-    for (char c : sIn)
+    for (size_t i = 0; i < sIn.size();)
     {
-        if (nUsed++ >= nMax)
+        const size_t nLen = NisarDumpUtf8SeqLen(static_cast<unsigned char>(sIn[i]));
+        if (nUsed++ >= nMax || i + nLen > sIn.size())
         {
             if (nStorageSize > 0)
                 sOut += CPLSPrintf("...\" (STRSIZE %llu)",
                                    static_cast<unsigned long long>(nStorageSize));
             else
                 sOut += CPLSPrintf("...\" (%llu chars)",
-                                   static_cast<unsigned long long>(sIn.size()));
+                                   static_cast<unsigned long long>(NisarDumpUtf8Length(sIn)));
             return sOut;
         }
+        if (nLen > 1)
+        {
+            sOut.append(sIn, i, nLen);
+            i += nLen;
+            continue;
+        }
+        const char c = sIn[i++];
         switch (c)
         {
             case '\n': sOut += "\\n"; break;
@@ -2551,10 +2578,12 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
             // Variable-length strings are materialized whole by H5Dread, so
             // ask HDF5 for the total payload first (this reads the sequence
             // lengths, not the heap data) and refuse to read past the cap.
+            // H5Dvlen_get_buf_size crashes on scalar dataspaces (HDF5 2.2),
+            // so a scalar VL string is read whole like an attribute.
             hsize_t nVlenBytes = 0;
             const hsize_t nVlenCap =
                 static_cast<hsize_t>(nCount) * (nMaxStringChars + 1);
-            if (!bIsAttr &&
+            if (!bIsAttr && H5Sget_simple_extent_type(hSpace) != H5S_SCALAR &&
                 H5Dvlen_get_buf_size(hObj, hMem, hSpace, &nVlenBytes) >= 0 &&
                 nVlenBytes > nVlenCap)
             {
@@ -2576,9 +2605,11 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
         {
             // Read through a memory type no larger than the print cap so
             // huge fixed-length strings never get allocated in full; HDF5
-            // truncates on the fixed->fixed string conversion.
+            // truncates on the fixed->fixed string conversion. UTF-8 code
+            // points take up to 4 bytes, so size the read accordingly.
             const size_t nSize = H5Tget_size(hType);
-            const size_t nMemSize = std::min(nSize, nMaxStringChars + 1);
+            const size_t nBytesPerChar = H5Tget_cset(hType) == H5T_CSET_UTF8 ? 4 : 1;
+            const size_t nMemSize = std::min(nSize, nMaxStringChars * nBytesPerChar + 1);
             hid_t hMem = H5Tcopy(hType);
             std::vector<char> abyBuf(nCount * nMemSize + 1, '\0');
             if (nMemSize > 0 && hMem >= 0 &&
@@ -3224,8 +3255,16 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         if (bExplicitRoot) {
             poDS->m_sDumpRoot = pszDumpRoot;
         } else {
+            // Instrument precedence: explicit raster path (/science/<INST>/...),
+            // then INST, then the instrument detected from identification.
             const char *pszInstOpt = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
             std::string sInst = pszInstOpt ? pszInstOpt : poDS->m_sInst;
+            if (pszSubdatasetPath != nullptr && STARTS_WITH_CI(pszSubdatasetPath, "/science/")) {
+                const char *pszInstStart = pszSubdatasetPath + strlen("/science/");
+                const char *pszInstEnd = strchr(pszInstStart, '/');
+                const std::string sPathInst(pszInstStart, pszInstEnd ? pszInstEnd - pszInstStart : strlen(pszInstStart));
+                if (!sPathInst.empty()) sInst = sPathInst;
+            }
             for (auto &c : sInst) c = toupper(c);
             poDS->m_sDumpRoot = sInst.empty() ? "/" : "/science/" + sInst;
         }
