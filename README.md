@@ -163,7 +163,7 @@ argument of `gdal.OpenEx()` in Python.
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` | `CUBICSPLINE` | Resampling method used when warping the DEM onto a geocoded (L2/L3) grid. |
 | `DEM_NODATA_HEIGHT` | metres | `0` | Level 1 interpolation: height assumed where the DEM is nodata, masked or absent. Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | *(none)* | Switches the driver into interpolation mode. The cube is the dataset named in the connection string, or `/science/<INST>/<PRODUCT>/metadata/radarGrid/<QUANTITY>` (L2/L3) / `.../metadata/geolocationGrid/<QUANTITY>` (L1) when only the file is given. Must be combined with `DEM_FILE`. |
-| `DUMP` | `YES` / `NO` | `NO` | Optional: advertise the `NISAR_DUMP` domain in the domain list (`gdalinfo -mdd all`) and list non-raster (string, compound, scalar, 1-D) datasets in `SUBDATASETS` as `(<type>, not openable)`. Not needed for `gdalinfo -mdd NISAR_DUMP`. See [Inspecting the full HDF5 hierarchy](#inspecting-the-full-hdf5-hierarchy--mdd-nisar_dump). |
+| `DUMP` | `YES` / `NO` | `NO` | Optional: advertise the `NISAR_DUMP` domain in the domain list (`gdalinfo -mdd all`). Not needed for `gdalinfo -mdd NISAR_DUMP`; never changes `SUBDATASETS`. See [Inspecting the full HDF5 hierarchy](#inspecting-the-full-hdf5-hierarchy--mdd-nisar_dump). |
 | `DUMP_ROOT` | HDF5 group path | `/science/<INST>` | Group where the `NISAR_DUMP` traversal starts; `/` dumps the whole file. Must exist. |
 | `DUMP_MODE` | `HEADER` / `FULL` | `HEADER` | `HEADER` prints objects, datatypes, dataspaces and attributes only; `FULL` also prints values of scalars and 1-D datasets up to `NISAR_DUMP_MAX_ELEMENTS` elements. |
 | `ENABLE_PAGE_BUFFERING` | `YES` / `NO` | `NO` | Reserved for a discovery pass that aligns the HDF5 page buffer. Currently the driver always uses a 4 MiB page buffer regardless of this setting. |
@@ -184,8 +184,8 @@ These are GDAL *configuration options*: set them as environment variables, with
 | `NISAR_PREFETCH_GRID` | `1` | Size (in blocks) of the square block grid that is fetched in a single request when a block is missing from the cache. `1` = fetch only the requested block (best for tile servers and small windows). Larger values (e.g. `24`) coalesce many chunks into one large range read, which is much faster for full-frame batch processing. |
 | `NISAR_MAX_MEGAFETCH_BYTES` | `16777216` (16 MiB) | Upper bound on the size of one coalesced ("mega-fetch") read. Prevents `NISAR_PREFETCH_GRID` from producing requests that are too large for the network or memory. |
 | `NISAR_MAX_VIRTUAL_OVR` | `16` | Largest decimation factor for which a virtual overview is synthesised (powers of two up to this value). Set to `1` to disable virtual overviews. |
-| `NISAR_DUMP_MAX_ELEMENTS` | `64` | `DUMP_MODE=FULL`: largest scalar / 1-D dataset (in elements) whose values are printed in the `NISAR_DUMP` domain; bigger arrays are reported as `(N elements, not printed)`. Also caps attribute values printed in either mode. |
-| `NISAR_DUMP_MAX_STRING_CHARS` | `2048` | Longest string value printed in the `NISAR_DUMP` domain before truncation with `...`. |
+| `NISAR_DUMP_MAX_ELEMENTS` | `64` | Largest value (in elements) printed in the `NISAR_DUMP` domain: scalar / 1-D datasets in `DUMP_MODE=FULL`, and attributes in either mode. Anything bigger is reported as `DATA { (N elements, not printed) }`. |
+| `NISAR_DUMP_MAX_STRING_CHARS` | `2048` | Longest string value printed in the `NISAR_DUMP` domain before truncation with `...`. Also bounds how much of a string *dataset* is read: fixed-length strings are read through a memory type of this size, and a variable-length string dataset whose payload exceeds it is not read at all (`(variable-length string, N bytes, not printed)`). Variable-length string *attributes* are read whole. |
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar (`/tmp/nisar_kerchunk_<dataset>.json`) describing the HDF5 chunk map of the opened raster, for use with Zarr / xarray tooling. |
 | `GDAL_NUM_THREADS` | number of CPUs | Number of threads used to decompress chunks in parallel. `ALL_CPUS` or unset uses every hardware thread. |
 | `GDAL_HTTP_MAX_RETRY` | `5` (set by the driver if unset) | Number of retries GDAL performs on failed HTTP range requests. |
@@ -404,8 +404,7 @@ gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL \
 # the whole file, including root attributes
 gdalinfo -mdd NISAR_DUMP -oo DUMP_ROOT=/ 'NISAR:"L1_RSLC.h5"'
 
-# DUMP=YES advertises the domain (so -mdd all includes it) and lists
-# non-raster datasets under /science/<INST> in SUBDATASETS
+# DUMP=YES advertises the domain so that -mdd all includes it
 gdalinfo -mdd all -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
 ```
 
@@ -436,15 +435,14 @@ Each metadata entry is one line of text. Groups enclose their children as in h5d
 (a group's `}` comes after its last descendant); object names are always absolute HDF5
 paths. `DUMP_MODE=HEADER` (default) never reads dataset values; `FULL` prints scalars and
 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` (64) elements and reports larger arrays
-as `DATA { (N elements, not printed) }`, so rasters are never pulled. Normal `gdalinfo`
-output is unchanged: the domain is only traversed when requested, and only appears in the
-domain list (`-mdd all`) with `-oo DUMP=YES`.
+as `DATA { (N elements, not printed) }`, so rasters are never pulled. Attribute values are
+printed in both modes under the same element cap, with the same marker when exceeded.
+Normal `gdalinfo` output is unchanged: the domain is only traversed when requested, and only
+appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
 
-`DUMP_ROOT` scopes the `NISAR_DUMP` listing only. The `SUBDATASETS` inventory that
-`DUMP=YES` expands is always the detected instrument group (`/science/LSAR` or
-`/science/SSAR`), so with `DUMP_ROOT=/` the dump also covers root-level attributes and any
-groups outside `/science/<INST>` that never appear in `SUBDATASETS`, and with a narrower
-root the dump is a subset of it.
+`DUMP_ROOT` scopes the `NISAR_DUMP` listing only; `SUBDATASETS` stays the openable-raster
+inventory of the detected instrument group and is not affected by any `DUMP*` option. String,
+compound, scalar and 1-D datasets therefore appear in the dump but never in `SUBDATASETS`.
 
 **Remote files:** the listing is built once, lazily, by a single `H5Ovisit` traversal that in
 HEADER mode touches object headers and attributes only (a few page-sized range requests; a

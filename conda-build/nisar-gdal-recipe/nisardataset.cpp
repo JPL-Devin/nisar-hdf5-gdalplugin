@@ -584,7 +584,6 @@ struct NISARVisitorData
     hid_t
         hStartingGroupID;  // Pass group/file ID for opening datasets inside visitor
     std::string sBasePath; // Absolute path prefix for GDAL Subdatasets
-    bool bIncludeAll = false; // DUMP=YES: keep scalar/1-D datasets too
 };
 
 // Callback for H5LiterateByName - reads scalar datasets in identification group
@@ -846,7 +845,7 @@ static herr_t NISAR_FindDatasetsVisitor(
     // Close dataset handle opened for checks
     H5Dclose(dset_id);
 
-    if (rank < 2 && !data->bIncludeAll)
+    if (rank < 2)
     {
         CPLDebug("NISAR_VISITOR", "Skipping dataset '%s' (rank %d < 2)",
                  full_path.c_str(), rank);
@@ -2529,7 +2528,20 @@ static std::string NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
             hid_t hMem = H5Tcopy(H5T_C_S1);
             H5Tset_size(hMem, H5T_VARIABLE);
             H5Tset_cset(hMem, H5Tget_cset(hType));
-            if (Read(hMem, apsz.data()))
+            // Variable-length strings are materialized whole by H5Dread, so
+            // ask HDF5 for the total payload first (this reads the sequence
+            // lengths, not the heap data) and refuse to read past the cap.
+            hsize_t nVlenBytes = 0;
+            const hsize_t nVlenCap =
+                static_cast<hsize_t>(nCount) * (nMaxStringChars + 1);
+            if (!bIsAttr &&
+                H5Dvlen_get_buf_size(hObj, hMem, hSpace, &nVlenBytes) >= 0 &&
+                nVlenBytes > nVlenCap)
+            {
+                sOut = CPLSPrintf("(variable-length string, %llu bytes, not printed)",
+                                  static_cast<unsigned long long>(nVlenBytes));
+            }
+            else if (Read(hMem, apsz.data()))
             {
                 for (size_t i = 0; i < nCount; ++i)
                 {
@@ -2656,15 +2668,25 @@ static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrNam
             data->papszLines,
             ("      DATASPACE  " + NisarDumpSpaceString(hSpace)).c_str());
         const hssize_t nPoints = H5Sget_simple_extent_npoints(hSpace);
-        if (hType >= 0 && nPoints > 0 &&
-            static_cast<size_t>(nPoints) <= data->nMaxElements)
+        if (hType >= 0 && nPoints > 0)
         {
-            std::string sValues = NisarDumpReadValues(
-                hAttr, true, hType, hSpace, static_cast<size_t>(nPoints),
-                data->nMaxStringChars);
-            if (!sValues.empty())
+            if (static_cast<size_t>(nPoints) > data->nMaxElements)
+            {
                 data->papszLines = CSLAddString(
-                    data->papszLines, ("      DATA { " + sValues + " }").c_str());
+                    data->papszLines,
+                    CPLSPrintf("      DATA { (%lld elements, not printed) }",
+                               static_cast<long long>(nPoints)));
+            }
+            else
+            {
+                std::string sValues = NisarDumpReadValues(
+                    hAttr, true, hType, hSpace, static_cast<size_t>(nPoints),
+                    data->nMaxStringChars);
+                if (!sValues.empty())
+                    data->papszLines = CSLAddString(
+                        data->papszLines,
+                        ("      DATA { " + sValues + " }").c_str());
+            }
         }
     }
     data->papszLines = CSLAddString(data->papszLines, "   }");
@@ -3029,8 +3051,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     // DUMP / DUMP_ROOT / DUMP_MODE (NISAR_DUMP metadata domain)
     // ====================================================================
     // The NISAR_DUMP domain is always available on request (gdalinfo -mdd NISAR_DUMP);
-    // DUMP=YES additionally advertises it in the domain list and includes non-raster
-    // datasets in SUBDATASETS.
+    // DUMP=YES additionally advertises it in the domain list (gdalinfo -mdd all).
     poDS->m_bDumpEnabled = CPLFetchBool(poOpenInfo->papszOpenOptions, "DUMP", false);
     {
         const char *pszDumpMode = CSLFetchNameValueDef(poOpenInfo->papszOpenOptions, "DUMP_MODE", "HEADER");
@@ -3170,7 +3191,6 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
             NISARVisitorData visitor_data;
             std::vector<std::string> found_paths_vector;
             visitor_data.pFoundPaths = &found_paths_vector;
-            visitor_data.bIncludeAll = poDS->m_bDumpEnabled;
 
             // Anchor the search to the specific instrument group
             std::string sScienceRoot = "/science/" + poDS->m_sInst;
@@ -3195,8 +3215,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                     if (hSubDataset < 0) continue;
 
                     hid_t hSubType = H5Dget_type(hSubDataset);
-                    const H5T_class_t eSubClass = (hSubType >= 0) ? H5Tget_class(hSubType) : H5T_NO_CLASS;
-                    if (eSubClass == H5T_STRING && !poDS->m_bDumpEnabled) {
+                    if (hSubType >= 0 && H5Tget_class(hSubType) == H5T_STRING) {
                         H5Tclose(hSubType); H5Dclose(hSubDataset); continue;
                     }
 
@@ -3223,32 +3242,12 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                     }
                     desc_val += "]";
 
-                    GDALDataType eSubDataType =
-                        (hSubType >= 0 && (eSubClass == H5T_INTEGER || eSubClass == H5T_FLOAT || eSubClass == H5T_COMPOUND
-#ifdef H5T_COMPLEX
-                                           || eSubClass == H5T_COMPLEX
-#endif
-                                           ))
-                            ? NisarDataset::GetGDALDataType(hSubType) : GDT_Unknown;
+                    GDALDataType eSubDataType = (hSubType >= 0) ? NisarDataset::GetGDALDataType(hSubType) : GDT_Unknown;
                     std::string sDataTypeDesc = "(unknown)";
-                    if (eSubDataType == GDT_Unknown && poDS->m_bDumpEnabled) {
-                        const char *pszClass = "unknown";
-                        switch (eSubClass) {
-                            case H5T_STRING:   pszClass = "string"; break;
-                            case H5T_COMPOUND: pszClass = "compound"; break;
-                            case H5T_INTEGER:  pszClass = "integer"; break;
-                            case H5T_FLOAT:    pszClass = "float"; break;
-                            case H5T_ENUM:     pszClass = "enum"; break;
-                            case H5T_VLEN:     pszClass = "vlen"; break;
-                            case H5T_ARRAY:    pszClass = "array"; break;
-                            default: break;
-                        }
-                        sDataTypeDesc = CPLSPrintf("(%s, not openable)", pszClass);
-                    } else if (eSubDataType != GDT_Unknown) {
+                    if (eSubDataType != GDT_Unknown) {
                         sDataTypeDesc = "(";
                         if (GDALDataTypeIsComplex(eSubDataType)) sDataTypeDesc += "complex, ";
                         sDataTypeDesc += GDALGetDataTypeName(GDALGetNonComplexDataType(eSubDataType));
-                        if (nSubDim < 2) sDataTypeDesc += ", not openable";
                         sDataTypeDesc += ")";
                     }
                     desc_val += " " + hdf5_path + " " + sDataTypeDesc;

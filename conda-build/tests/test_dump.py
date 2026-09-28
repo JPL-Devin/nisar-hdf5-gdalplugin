@@ -27,6 +27,7 @@ Environment overrides:
 
 import glob
 import os
+import re
 
 import pytest
 
@@ -168,13 +169,18 @@ def test_open_options_registered():
         assert f"name='{name}'" in xml
 
 
+def _subdataset_descs(ds):
+    sub = ds.GetMetadata("SUBDATASETS")
+    descs = [v for k, v in sub.items() if k.endswith("_DESC")]
+    assert descs
+    return descs
+
+
 @pytest.mark.parametrize("product", PRODUCTS)
 def test_default_without_dump(granules, product):
     ds = _open(granules, product)
     assert "NISAR_DUMP" not in ds.GetMetadataDomainList()
-    sub = ds.GetMetadata("SUBDATASETS")
-    descs = [v for k, v in sub.items() if k.endswith("_DESC")]
-    assert descs
+    descs = _subdataset_descs(ds)
     assert not any("not openable" in d for d in descs)
     assert not any("(string" in d for d in descs)
 
@@ -239,14 +245,19 @@ def test_dump_without_dump_option(granules, product):
 
 
 @pytest.mark.parametrize("product", PRODUCTS)
-def test_dump_lists_string_subdatasets(granules, product):
+def test_dump_leaves_subdatasets_unchanged(granules, product):
+    """DUMP=YES only advertises the domain; SUBDATASETS stays the raster-only
+    inventory whose every entry can be opened."""
+    plain = _open(granules, product).GetMetadata("SUBDATASETS")
     ds = _open(granules, product, DUMP="YES")
-    sub = ds.GetMetadata("SUBDATASETS")
-    descs = [v for k, v in sub.items() if k.endswith("_DESC")]
-    assert any(f"{IDENT}/productType (string, not openable)" in d for d in descs)
-    # rasters keep their normal description
+    assert ds.GetMetadata("SUBDATASETS") == plain
+    descs = _subdataset_descs(ds)
+    assert not any("not openable" in d for d in descs)
+    assert f"{IDENT}/productType" not in " ".join(descs)
     assert any(d.endswith("(Float32)") or d.endswith("(complex, Float32)")
                for d in descs)
+    # string datasets are still visible, via the dump
+    assert f"{IDENT}/productType" in _objects(_dump(ds), "DATASET")
 
 
 @pytest.mark.parametrize("product", PRODUCTS)
@@ -319,3 +330,18 @@ def test_full_dump_skips_large_arrays(granules):
     idx = lines.index(f'DATASET "{root}/xCoordinates" {{')
     data = [l for l in lines[idx:idx + 4] if l.startswith("   DATA {")]
     assert data and "elements, not printed" in data[0]
+
+
+def test_attribute_values_follow_element_cap(granules):
+    """Attributes longer than NISAR_DUMP_MAX_ELEMENTS get an explicit marker
+    instead of silently losing their DATA line (both modes)."""
+    root = "/science/LSAR/GCOV/grids/frequencyA"
+    with gdal.config_option("NISAR_DUMP_MAX_ELEMENTS", "1"):
+        ds = _open(granules, "GCOV", DUMP_ROOT=root)
+        lines = _dump(ds)
+    idx = lines.index(f'DATASET "{root}/xCoordinates" {{')
+    block = lines[idx:idx + 40]
+    attr = block.index('   ATTRIBUTE "REFERENCE_LIST" {')
+    data = [l for l in block[attr:attr + 4] if l.startswith("      DATA {")]
+    assert data and re.fullmatch(r"      DATA \{ \(\d+ elements, not printed\) \}", data[0])
+    assert not any(l.startswith("   DATA {") for l in block)  # HEADER mode
