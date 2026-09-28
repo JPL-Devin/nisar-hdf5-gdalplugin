@@ -444,7 +444,12 @@ appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
 inventory of the detected instrument group and is not affected by any `DUMP*` option. String,
 compound, scalar and 1-D datasets therefore appear in the dump but never in `SUBDATASETS`.
 
-**Remote files:** the listing is built once, lazily, by a single `H5Ovisit` traversal that in
+Soft and external links are listed h5dump-style (`SOFTLINK … { LINKTARGET … }`,
+`EXTERNAL_LINK … { TARGETFILE … TARGETPATH … }`) without being followed, and a second hard link to
+an already-dumped object prints `HARDLINK "first path"` instead of repeating its contents
+(current NISAR products have none of these).
+
+**Remote files:** the listing is built once, lazily, by a single `H5Lvisit` traversal that in
 HEADER mode touches object headers and attributes only (a few page-sized range requests; a
 full `/science/LSAR` walk of an RSLC or GUNW granule over HTTPS took 2-4 s in testing).
 

@@ -120,8 +120,9 @@ Metadata domains you will see:
 - `NISAR_GLOBAL` — root-level HDF5 attributes.
 - `SUBDATASETS` — container only.
 - `NISAR_DUMP` — on request (`-mdd NISAR_DUMP`, no open option needed): one line per h5dump-style text line (`GROUP "..." {`,
-  `DATASET "..." {`, `DATATYPE`, `DATASPACE`, `ATTRIBUTE`, `DATA`, `}`) under `DUMP_ROOT`. Built
-  lazily in one `H5Ovisit` pass; HEADER mode reads object headers/attributes only (2-4 s for a
+  `DATASET "..." {`, `DATATYPE`, `DATASPACE`, `ATTRIBUTE`, `DATA`, `}`, plus `SOFTLINK` /
+  `EXTERNAL_LINK` / `HARDLINK` records for links, not followed) under `DUMP_ROOT`. Built
+  lazily in one `H5Lvisit` pass; HEADER mode reads object headers/attributes only (2-4 s for a
   full `/science/LSAR` walk of a remote RSLC/GUNW). Listed by `GetMetadataDomainList()` /
   `-mdd all` only with `-oo DUMP=YES`. In Python: `ds.GetMetadata_List("NISAR_DUMP")`.
 - `DERIVED_SUBDATASETS` — numeric rasters only (see below).

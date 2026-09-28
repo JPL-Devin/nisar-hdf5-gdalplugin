@@ -7,9 +7,9 @@
 NISAR_DUMP metadata-domain tests for the NISAR GDAL driver.
 
 Exercises the NISAR_DUMP metadata domain (h5dump-style listing, available on
-request without any open option; `-oo DUMP=YES` advertises it and adds
-non-raster datasets to SUBDATASETS) in container mode on one granule per product level:
-L1 RSLC, L2 GUNW, L2 GCOV and L3 SME2.
+request without any open option; `-oo DUMP=YES` only advertises it to
+`-mdd all` and never changes SUBDATASETS) in container mode on one granule per
+product level: L1 RSLC, L2 GUNW, L2 GCOV and L3 SME2.
 
 Granules are located through NASA Earthdata (CMR) with earthaccess and read
 through the driver over HTTPS with `.netrc` credentials, unless a local copy
@@ -345,3 +345,56 @@ def test_attribute_values_follow_element_cap(granules):
     data = [l for l in block[attr:attr + 4] if l.startswith("      DATA {")]
     assert data and re.fullmatch(r"      DATA \{ \(\d+ elements, not printed\) \}", data[0])
     assert not any(l.startswith("   DATA {") for l in block)  # HEADER mode
+
+
+def test_links_and_aliases(tmp_path):
+    """Soft links, external links and hard-link aliases are reported the way
+    h5dump does (SOFTLINK/EXTERNAL_LINK/HARDLINK) instead of being dropped or
+    dumped twice. Uses a synthetic granule, so it needs h5py."""
+    h5py = pytest.importorskip("h5py")
+    import numpy as np
+
+    path = tmp_path / "links.h5"
+    root = "/science/LSAR/RSLC"
+    with h5py.File(path, "w") as f:
+        ident = f.create_group("/science/LSAR/identification")
+        ident.create_dataset("productType", data=np.bytes_(b"RSLC"))
+        ident.create_dataset("productLevel", data=np.bytes_(b"L1"))
+        f.create_dataset(f"{root}/swaths/frequencyA/HH",
+                         data=np.zeros((4, 4), dtype=np.float32))
+        meta = f.create_group(f"{root}/metadata")
+        values = meta.create_dataset("values", data=np.arange(4, dtype=np.int32))
+        meta["alias"] = values                       # hard link to a dataset
+        f[f"{root}/metadataAlias"] = meta            # hard link to a group
+        f[f"{root}/soft"] = h5py.SoftLink(f"{root}/metadata/values")
+        f[f"{root}/dangling"] = h5py.SoftLink("/nowhere")
+        f[f"{root}/ext"] = h5py.ExternalLink("other.h5", "/some/path")
+
+    ds = gdal.OpenEx(f'NISAR:"{path}"', gdal.OF_RASTER,
+                     open_options=[f"DUMP_ROOT={root}", "DUMP_MODE=FULL"])
+    lines = _dump(ds)
+
+    def block(header):
+        idx = lines.index(header)
+        return lines[idx:lines.index("}", idx) + 1]
+
+    assert block(f'SOFTLINK "{root}/soft" {{') == [
+        f'SOFTLINK "{root}/soft" {{', f'   LINKTARGET "{root}/metadata/values"', "}"]
+    assert block(f'SOFTLINK "{root}/dangling" {{')[1] == '   LINKTARGET "/nowhere"'
+    assert block(f'EXTERNAL_LINK "{root}/ext" {{') == [
+        f'EXTERNAL_LINK "{root}/ext" {{', '   TARGETFILE "other.h5"',
+        '   TARGETPATH "/some/path"', "}"]
+
+    # The two names of the int32 dataset: one is dumped, the other is an alias.
+    alias, values = block(f'DATASET "{root}/metadata/alias" {{'), block(
+        f'DATASET "{root}/metadata/values" {{')
+    dumped, aliased = (alias, values) if "   HARDLINK" in values[1] else (values, alias)
+    assert "   DATA { 0, 1, 2, 3 }" in dumped
+    assert aliased[1] == f'   HARDLINK {dumped[0][len("DATASET "):-2]}'
+    assert len(aliased) == 3
+
+    # The aliased group is not traversed a second time.
+    assert block(f'GROUP "{root}/metadataAlias" {{') == [
+        f'GROUP "{root}/metadataAlias" {{', f'   HARDLINK "{root}/metadata"', "}"]
+    assert _objects(lines, "DATASET").count(f"{root}/metadataAlias/values") == 0
+    assert _parents(lines)[f"{root}/soft"] == root

@@ -404,7 +404,7 @@ gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL -oo DUMP_ROOT=/ NISAR:"$RSLC"       
 gdalinfo -mdd all -oo DUMP=YES NISAR:"$GCOV"                                           # DUMP=YES makes -mdd all include it
 ```
 
-The traversal starts at `DUMP_ROOT` (default `/science/<INST>`; `/` is the file root) and visits objects in one `H5Ovisit` pass. Each line of the domain is one line of h5dump-like text:
+The traversal starts at `DUMP_ROOT` (default `/science/<INST>`; `/` is the file root) and walks every link below it in one `H5Lvisit` pass. Each line of the domain is one line of h5dump-like text:
 
 ```
 Metadata (NISAR_DUMP):
@@ -437,6 +437,8 @@ Metadata (NISAR_DUMP):
 ```
 
 Groups enclose their children as in h5dump (a group's `}` follows its last descendant, so the closing braces pile up at the end of each subtree); every object name is an absolute HDF5 path, so lines are meaningful on their own when grepping.
+
+Links are reported the way h5dump does, and are not followed: a soft link prints as `SOFTLINK "path" { LINKTARGET "target" }`, an external link as `EXTERNAL_LINK "path" { TARGETFILE "file" TARGETPATH "object" }`, and a second hard link to an object that was already dumped prints as `GROUP|DATASET "path" { HARDLINK "first path" }` (the object's contents appear once, under the first name encountered). Current NISAR products contain hard links only, one per object, so these records only show up in non-standard files.
 
 `DUMP_MODE=HEADER` (default) prints object headers, datatypes, dataspaces and attributes, including attribute values, but never reads dataset values. `DUMP_MODE=FULL` adds a `DATA { … }` line for scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMENTS` elements (config option, default 64); anything larger is reported as `DATA { (N elements, not printed) }`, so a FULL dump never pulls raster pixels. The same element cap applies to attribute values in both modes (an attribute with more elements gets the same `(N elements, not printed)` marker instead of its values). Strings longer than `NISAR_DUMP_MAX_STRING_CHARS` (default 2048) are truncated with `...`; that cap also bounds the *read* of string datasets in FULL mode: fixed-length strings are read through a memory type of that size, and a variable-length string dataset whose total payload exceeds `elements × (cap + 1)` bytes is reported as `(variable-length string, N bytes, not printed)` rather than read. Variable-length string attributes are read whole (attribute values are small in NISAR products).
 

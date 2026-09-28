@@ -156,7 +156,10 @@ class NisarDataset final : public GDALPamDataset
     static herr_t MetadataVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
 
     bool LoadDumpMetadata();
-    static herr_t DumpVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
+    // H5Lvisit callback: emits a record per link (object, soft/external link
+    // or hard-link alias) and dispatches objects to DumpObject.
+    static herr_t DumpLinkCallback(hid_t hGroup, const char *name, const H5L_info2_t *info, void *op_data);
+    static herr_t DumpObject(hid_t hLoc, const char *name, const H5O_info2_t *info, void *op_data);
 
     void ReadIdentificationMetadata();
     std::string ReadHDF5StringArrayAsList(hid_t hParentGroup, const char *pszDatasetName);
