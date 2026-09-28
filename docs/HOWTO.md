@@ -8,7 +8,7 @@ Prepared for NISAR science data users
 
 21 September 2026
 
-Reflects `gdal-driver-nisar` version 0.7.0 (built against GDAL 3.12). Behaviour statements have been checked against the driver source, the repository README and the `nisar-gdal` skill document; anything that could not be re-verified is marked *observed* or *historical*.
+Reflects `gdal-driver-nisar` version 0.7.1 (built against GDAL 3.12). Behaviour statements have been checked against the driver source, the repository README and the `nisar-gdal` skill document; anything that could not be re-verified is marked *observed* or *historical*.
 
 # Contents
 
@@ -76,7 +76,7 @@ The variables hold bare paths, without the `NISAR:` prefix, so the same variable
 
 ## 1.2 What is verified and what is not
 
-This edition was redrafted against the driver source for version 0.7.0, the repository `README.md` and the `nisar-gdal` skill document. Three kinds of statement appear, and the guide tries to keep them apart:
+This edition was redrafted against the driver source for version 0.7.0 and updated for 0.7.1, the repository `README.md` and the `nisar-gdal` skill document. Three kinds of statement appear, and the guide tries to keep them apart:
 
 - **Verified in source.** How the connection string is parsed, which open options exist and what they do, how georeferencing, masks, statistics and derived subdatasets are produced. These are stated plainly.
 - ***Observed.*** Behaviour seen on a specific granule with a specific driver build (timings, memory figures, a warning printed on one product). Marked as such; not re-run for this edition.
@@ -90,7 +90,7 @@ HDF5 layer names inside a product (for example the exact spelling of a GUNW laye
 
 ## 2.1 Installing the driver
 
-The driver ships as a conda package that places the plugin shared library into `$CONDA_PREFIX/lib/gdalplugins`, the directory GDAL scans for plugins. The package is pinned to the GDAL minor version it was built against (3.12 for 0.7.0) and pulls in compatible `gdal`, `libgdal-core` and `hdf5` packages. Supported platforms are Linux x86_64, Linux aarch64 and macOS arm64; Windows is not supported.
+The driver ships as a conda package that places the plugin shared library into `$CONDA_PREFIX/lib/gdalplugins`, the directory GDAL scans for plugins. The package is pinned to the GDAL minor version it was built against (3.12 for 0.7.1) and pulls in compatible `gdal`, `libgdal-core` and `hdf5` packages. Supported platforms are Linux x86_64, Linux aarch64 and macOS arm64; Windows is not supported.
 
 To create a dedicated environment, which is the recommended approach:
 
@@ -110,7 +110,7 @@ If conda refuses to solve, the GDAL already in that environment is almost certai
 Pin an exact version in any processing pipeline whose outputs you intend to compare over time:
 
 ```
-mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.0
+mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.1
 ```
 
 Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `conda-build/nisar-gdal-recipe/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
@@ -163,7 +163,7 @@ The third check asks the driver to report its own version and build date, and al
 gdalinfo --format NISAR
 ```
 
-Look for a `DRIVER_VERSION` entry of the form `v0.7.0 (Build Date: ...)`.
+Look for a `DRIVER_VERSION` entry of the form `v0.7.1 (Build Date: ...)`.
 
 # 3. Data access paths and credentials
 
@@ -987,7 +987,7 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 
 # 14. Version history and behaviour changes
 
-Because several releases changed output rather than only fixing crashes, knowing your version is part of knowing your data. The entries for versions before 0.6.6 are taken from release announcements and field notes and have not been re-verified; the rows for 0.6.6 and 0.7.0 summarise what was verified in source.
+Because several releases changed output rather than only fixing crashes, knowing your version is part of knowing your data. The entries for versions before 0.6.6 are taken from release announcements and field notes and have not been re-verified; the rows for 0.6.6, 0.7.0 and 0.7.1 summarise what was verified in source.
 
 | Version | Change | Affects results |
 | --- | --- | --- |
@@ -998,7 +998,8 @@ Because several releases changed output rather than only fixing crashes, knowing
 | 0.1.8 | Radar-grid metadata cubes interpreted as multi-band rasters with a correct GeoTransform; band selection with `-b`. | yes |
 | 0.1.9 | `DRIVER_VERSION` with build date reported via `gdalinfo --format NISAR`. | no |
 | 0.3.0 | Path quoting and slash handling reworked. Mask no longer applied by default. Remote reads through HDF5's ROS3 driver with AWS-style credential sourcing. | yes |
-| 0.7.0 (current) | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW, RSLC) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` (L2/L3) or `metadata/geolocationGrid` (L1) when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. RSLC interpolation in radar coordinates with per-pixel terrain height solved through `coordinateX`/`coordinateY` and the DEM (`DEM_NODATA_HEIGHT`), GCPs passed through. | yes (GSLC and RSLC interpolation) |
+| 0.7.1 (current) | `NISAR_DUMP` metadata domain: h5dump-style listing of the HDF5 hierarchy via `gdalinfo -mdd NISAR_DUMP`, scoped by `DUMP_ROOT`, with `DUMP_MODE=HEADER\|FULL` and bounded values (`NISAR_DUMP_MAX_ELEMENTS`, `NISAR_DUMP_MAX_STRING_CHARS`); `DUMP=YES` only advertises the domain for `-mdd all` (see [section 5](#5-exploring-a-granule)). Default output and `SUBDATASETS` unchanged. | no |
+| 0.7.0 | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW, RSLC) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` (L2/L3) or `metadata/geolocationGrid` (L1) when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. RSLC interpolation in radar coordinates with per-pixel terrain height solved through `coordinateX`/`coordinateY` and the DEM (`DEM_NODATA_HEIGHT`), GCPs passed through. | yes (GSLC and RSLC interpolation) |
 | 0.6.6 | Built against GDAL 3.12. All remote I/O routed through GDAL VSI via a custom HDF5 Virtual File Layer (ROS3 no longer used; standard GDAL `AWS_*` configuration applies). Open options registered in `DMD_OPENOPTIONLIST`; `DEM_RESAMPLING` added; no `LAYER`/`MEASURE` options. Chunk-aligned mega-fetch reads with `NISAR_PREFETCH_GRID` / `NISAR_MAX_MEGAFETCH_BYTES`, virtual overviews, attribute-based statistics, GUNW-specific mask decoding, optional Kerchunk sidecar. | yes (statistics, masks) |
 
 # 15. Verification checklist
