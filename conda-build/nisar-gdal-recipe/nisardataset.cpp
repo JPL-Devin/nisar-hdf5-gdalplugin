@@ -2304,7 +2304,11 @@ struct NISAR_DumpVisitData
     size_t nMaxStringChars; // per-string cap for printed values
 };
 
-static std::string NisarDumpQuote(const std::string &sIn, size_t nMax)
+// Quotes at most nMax characters of sIn. nStorageSize > 0 means sIn is a
+// bounded read of a fixed-length string of that declared size, so the
+// truncation marker reports the STRSIZE instead of the (unknown) length.
+static std::string NisarDumpQuote(const std::string &sIn, size_t nMax,
+                                  size_t nStorageSize = 0)
 {
     std::string sOut = "\"";
     size_t nUsed = 0;
@@ -2312,8 +2316,12 @@ static std::string NisarDumpQuote(const std::string &sIn, size_t nMax)
     {
         if (nUsed++ >= nMax)
         {
-            sOut += CPLSPrintf("...\" (%llu chars)",
-                               static_cast<unsigned long long>(sIn.size()));
+            if (nStorageSize > 0)
+                sOut += CPLSPrintf("...\" (STRSIZE %llu)",
+                                   static_cast<unsigned long long>(nStorageSize));
+            else
+                sOut += CPLSPrintf("...\" (%llu chars)",
+                                   static_cast<unsigned long long>(sIn.size()));
             return sOut;
         }
         switch (c)
@@ -2512,18 +2520,26 @@ static std::string NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
         }
         else
         {
+            // Read through a memory type no larger than the print cap so
+            // huge fixed-length strings never get allocated in full; HDF5
+            // truncates on the fixed->fixed string conversion.
             const size_t nSize = H5Tget_size(hType);
-            std::vector<char> abyBuf(nCount * nSize + 1, '\0');
-            if (nSize > 0 && Read(hType, abyBuf.data()))
+            const size_t nMemSize = std::min(nSize, nMaxStringChars + 1);
+            hid_t hMem = H5Tcopy(hType);
+            std::vector<char> abyBuf(nCount * nMemSize + 1, '\0');
+            if (nMemSize > 0 && hMem >= 0 &&
+                H5Tset_size(hMem, nMemSize) >= 0 && Read(hMem, abyBuf.data()))
             {
                 for (size_t i = 0; i < nCount; ++i)
                 {
                     Join(i);
-                    std::string s(abyBuf.data() + i * nSize,
-                                  strnlen(abyBuf.data() + i * nSize, nSize));
-                    sOut += NisarDumpQuote(s, nMaxStringChars);
+                    std::string s(abyBuf.data() + i * nMemSize,
+                                  strnlen(abyBuf.data() + i * nMemSize, nMemSize));
+                    sOut += NisarDumpQuote(s, nMaxStringChars,
+                                           nMemSize < nSize ? nSize : 0);
                 }
             }
+            if (hMem >= 0) H5Tclose(hMem);
         }
     }
     else if (eClass == H5T_INTEGER)
@@ -2647,9 +2663,9 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
     hid_t hObj = H5Oopen(hRoot, name, H5P_DEFAULT);
     if (hObj < 0)
     {
-        data->papszLines = CSLAddString(
-            data->papszLines, CPLSPrintf("OBJECT \"%s\" { (not openable) }", sPath.c_str()));
-        return H5_ITER_CONT;
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Oopen('%s') failed; aborting traversal.",
+                 sPath.c_str());
+        return H5_ITER_ERROR;
     }
 
     switch (info->type)
@@ -2725,11 +2741,17 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
     }
 
     hsize_t idx = 0;
-    H5Aiterate2(hObj, H5_INDEX_NAME, H5_ITER_NATIVE, &idx,
-                NisarDumpAttributeCallback, data);
+    const herr_t eAttr = H5Aiterate2(hObj, H5_INDEX_NAME, H5_ITER_NATIVE, &idx,
+                                     NisarDumpAttributeCallback, data);
 
     data->papszLines = CSLAddString(data->papszLines, "}");
     H5Oclose(hObj);
+    if (eAttr < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: attribute iteration on '%s' failed; aborting traversal.",
+                 sPath.c_str());
+        return H5_ITER_ERROR;
+    }
     return H5_ITER_CONT;
 }
 
