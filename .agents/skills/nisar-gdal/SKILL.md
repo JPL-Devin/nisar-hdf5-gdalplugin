@@ -77,7 +77,7 @@ matched case-insensitively by GDAL; the canonical spelling is upper case.
 | `DEM_RESAMPLING` | `NEAREST`, `BILINEAR`, `CUBIC`, `CUBICSPLINE` (default) | How the DEM is warped onto a geocoded (L2/L3) target grid; unused on L1. |
 | `DEM_NODATA_HEIGHT` | metres, default `0` | L1 interpolation only: height assumed where the DEM is nodata / masked / absent (ocean). Must be finite. |
 | `QUANTITY` | cube name, e.g. `incidenceAngle` | Routes the open to the cube-interpolation dataset (see below); with a bare `NISAR:"file.h5"` the cube is resolved under `metadata/radarGrid/<QUANTITY>` (L2/L3) or `metadata/geolocationGrid/<QUANTITY>` (L1). |
-| `DUMP` | `YES` / `NO` (default `NO`) | Optional. Advertises the `NISAR_DUMP` domain (`-mdd all`) and lists string/compound/scalar/1-D datasets in `SUBDATASETS` as `(<type>, not openable)`. `gdalinfo -mdd NISAR_DUMP` works without it. |
+| `DUMP` | `YES` / `NO` (default `NO`) | Optional. Advertises the `NISAR_DUMP` domain (`-mdd all`) and lists string/compound/scalar/1-D datasets under `/science/<INST>` in `SUBDATASETS` as `(<type>, not openable)` (this inventory ignores `DUMP_ROOT`). `gdalinfo -mdd NISAR_DUMP` works without it. |
 | `DUMP_ROOT` | HDF5 group, default `/science/<INST>` | Start of the dump traversal; `/` = whole file. Must exist or the open fails. |
 | `DUMP_MODE` | `HEADER` (default) / `FULL` | `HEADER`: objects, datatypes, dataspaces, attributes (with values), no dataset values. `FULL`: also `DATA { … }` for scalars / 1-D datasets ≤ `NISAR_DUMP_MAX_ELEMENTS` (64) elements; larger ones print `(N elements, not printed)`. |
 | `ENABLE_PAGE_BUFFERING` | boolean, default `NO` | Reserved. The driver always sets a 4 MiB HDF5 page buffer; this option has no other effect today. |

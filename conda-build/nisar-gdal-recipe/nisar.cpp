@@ -74,7 +74,7 @@ void GDALRegister_NISAR()
                                   <Option name='DEM_NODATA_HEIGHT' type='float' description='Height (m) assumed where the DEM is nodata or absent (L1 radar-grid interpolation)' default='0'/>
                                   <Option name='QUANTITY' type='string' description='Metadata-cube quantity to interpolate onto the imaging grid (e.g. incidenceAngle). Resolved under metadata/radarGrid (L2) or metadata/geolocationGrid (L1) when no HDF5 path is given; reference grid follows INST/FREQ/POL'/>
                                   <Option name='MASK' type='boolean' description='Apply valid data mask (default NO)'/>
-                                  <Option name='DUMP' type='boolean' description='Advertise the NISAR_DUMP metadata domain in the domain list (gdalinfo -mdd all) and include non-raster datasets in SUBDATASETS. Not required for gdalinfo -mdd NISAR_DUMP' default='NO'/>
+                                  <Option name='DUMP' type='boolean' description='Advertise the NISAR_DUMP metadata domain in the domain list (gdalinfo -mdd all) and include non-raster datasets under /science/&lt;INST&gt; in SUBDATASETS (independent of DUMP_ROOT). Not required for gdalinfo -mdd NISAR_DUMP' default='NO'/>
                                   <Option name='DUMP_ROOT' type='string' description='HDF5 group where the NISAR_DUMP traversal starts (default /science/&lt;INST&gt;; use / for the whole file)'/>
                                   <Option name='DUMP_MODE' type='string-select' description='HEADER lists objects, datatypes, dataspaces and attributes; FULL also prints values of scalars and small 1-D datasets' default='HEADER'>
                                   <Value>HEADER</Value>

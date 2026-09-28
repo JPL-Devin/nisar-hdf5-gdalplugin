@@ -405,7 +405,7 @@ gdalinfo -mdd NISAR_DUMP -oo DUMP_MODE=FULL \
 gdalinfo -mdd NISAR_DUMP -oo DUMP_ROOT=/ 'NISAR:"L1_RSLC.h5"'
 
 # DUMP=YES advertises the domain (so -mdd all includes it) and lists
-# non-raster datasets in SUBDATASETS
+# non-raster datasets under /science/<INST> in SUBDATASETS
 gdalinfo -mdd all -oo DUMP=YES 'NISAR:"L2_GCOV.h5"'
 ```
 
@@ -437,6 +437,12 @@ values; `FULL` prints scalars and 1-D datasets of at most `NISAR_DUMP_MAX_ELEMEN
 elements and reports larger arrays as `DATA { (N elements, not printed) }`, so rasters are
 never pulled. Normal `gdalinfo` output is unchanged: the domain is only traversed when
 requested, and only appears in the domain list (`-mdd all`) with `-oo DUMP=YES`.
+
+`DUMP_ROOT` scopes the `NISAR_DUMP` listing only. The `SUBDATASETS` inventory that
+`DUMP=YES` expands is always the detected instrument group (`/science/LSAR` or
+`/science/SSAR`), so with `DUMP_ROOT=/` the dump also covers root-level attributes and any
+groups outside `/science/<INST>` that never appear in `SUBDATASETS`, and with a narrower
+root the dump is a subset of it.
 
 **Remote files:** the listing is built once, lazily, by a single `H5Ovisit` traversal that in
 HEADER mode touches object headers and attributes only (a few page-sized range requests; a
