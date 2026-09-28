@@ -1792,8 +1792,7 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
         std::lock_guard<std::mutex> lock(m_DumpMetadataMutex);
         if (!m_bGotDumpMetadata)
         {
-            m_bGotDumpMetadata = true;
-            LoadDumpMetadata();
+            m_bGotDumpMetadata = LoadDumpMetadata();
         }
         return m_papszDumpMetadata;
     }
@@ -2562,8 +2561,21 @@ static std::string NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
         {
             std::vector<double> a(nCount * 2);
             hid_t hMem = H5Tcreate(H5T_COMPOUND, 2 * sizeof(double));
-            H5Tinsert(hMem, "r", 0, H5T_NATIVE_DOUBLE);
-            H5Tinsert(hMem, "i", sizeof(double), H5T_NATIVE_DOUBLE);
+            if (eClass == H5T_COMPOUND && H5Tget_nmembers(hType) == 2)
+            {
+                for (unsigned i = 0; i < 2; ++i)
+                {
+                    char *pszMember = H5Tget_member_name(hType, i);
+                    H5Tinsert(hMem, pszMember ? pszMember : (i == 0 ? "r" : "i"),
+                              i * sizeof(double), H5T_NATIVE_DOUBLE);
+                    if (pszMember) H5free_memory(pszMember);
+                }
+            }
+            else
+            {
+                H5Tinsert(hMem, "r", 0, H5T_NATIVE_DOUBLE);
+                H5Tinsert(hMem, "i", sizeof(double), H5T_NATIVE_DOUBLE);
+            }
 #ifdef H5T_COMPLEX
             const bool bOk = (eClass == H5T_COMPLEX)
                                  ? Read(H5T_NATIVE_DOUBLE_COMPLEX, a.data())
@@ -2662,7 +2674,11 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
                 std::string sType = "   DATATYPE  " + NisarDumpTypeString(hType);
                 const H5T_class_t eCls = H5Tget_class(hType);
                 const GDALDataType eGDT =
-                    (eCls == H5T_INTEGER || eCls == H5T_FLOAT || eCls == H5T_COMPOUND)
+                    (eCls == H5T_INTEGER || eCls == H5T_FLOAT || eCls == H5T_COMPOUND
+#ifdef H5T_COMPLEX
+                     || eCls == H5T_COMPLEX
+#endif
+                     )
                         ? GetGDALDataType(hType) : GDT_Unknown;
                 if (eGDT != GDT_Unknown)
                     sType += CPLSPrintf("  (GDAL %s)", GDALGetDataTypeName(eGDT));
@@ -2721,11 +2737,12 @@ herr_t NisarDataset::DumpVisitCallback(hid_t hRoot, const char *name,
     return H5_ITER_CONT;
 }
 
-void NisarDataset::LoadDumpMetadata()
+bool NisarDataset::LoadDumpMetadata()
 {
     CSLDestroy(m_papszDumpMetadata);
     m_papszDumpMetadata = nullptr;
-    if (hHDF5 < 0) return;
+    if (hHDF5 < 0) return false;
+    bool bOk = false;
 
     NISAR_DumpVisitData data;
     data.poDS = this;
@@ -2747,10 +2764,22 @@ void NisarDataset::LoadDumpMetadata()
             data.papszLines,
             CPLSPrintf("HDF5 \"%s\" %s {", pszFilename ? pszFilename : "",
                        m_bDumpFull ? "FULL" : "HEADER"));
-        H5Ovisit(hRoot, H5_INDEX_NAME, H5_ITER_NATIVE, DumpVisitCallback,
-                 &data, H5O_INFO_BASIC);
-        data.papszLines = CSLAddString(data.papszLines, "}");
+        const herr_t eVisit = H5Ovisit(hRoot, H5_INDEX_NAME, H5_ITER_NATIVE,
+                                       DumpVisitCallback, &data, H5O_INFO_BASIC);
         H5Oclose(hRoot);
+        if (eVisit < 0)
+        {
+            CSLDestroy(data.papszLines);
+            data.papszLines = nullptr;
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "NISAR_DUMP: traversal of '%s' failed (I/O error?); "
+                     "no listing produced.", data.sRoot.c_str());
+        }
+        else
+        {
+            data.papszLines = CSLAddString(data.papszLines, "}");
+            bOk = true;
+        }
     }
     else
     {
@@ -2762,6 +2791,7 @@ void NisarDataset::LoadDumpMetadata()
     m_papszDumpMetadata = data.papszLines;
     CPLDebug("NISAR_DRIVER", "NISAR_DUMP: %d lines from '%s'.",
              CSLCount(m_papszDumpMetadata), data.sRoot.c_str());
+    return bOk;
 }
 
 /************************************************************************/
@@ -2970,10 +3000,11 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
             H5E_auto2_t old_func_dump; void *old_client_data_dump;
             H5Eget_auto2(H5E_DEFAULT, &old_func_dump, &old_client_data_dump);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
-            const htri_t bRootExists = H5Lexists(poDS->hHDF5, poDS->m_sDumpRoot.c_str(), H5P_DEFAULT);
+            const hid_t hDumpRoot = H5Gopen2(poDS->hHDF5, poDS->m_sDumpRoot.c_str(), H5P_DEFAULT);
+            if (hDumpRoot >= 0) H5Gclose(hDumpRoot);
             H5Eset_auto2(H5E_DEFAULT, old_func_dump, old_client_data_dump);
-            if (bRootExists <= 0) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT '%s' does not exist in the file.", poDS->m_sDumpRoot.c_str());
+            if (hDumpRoot < 0) {
+                CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT '%s' is not an existing HDF5 group.", poDS->m_sDumpRoot.c_str());
                 delete poDS; return nullptr;
             }
         }
@@ -3130,7 +3161,11 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                     desc_val += "]";
 
                     GDALDataType eSubDataType =
-                        (hSubType >= 0 && (eSubClass == H5T_INTEGER || eSubClass == H5T_FLOAT || eSubClass == H5T_COMPOUND))
+                        (hSubType >= 0 && (eSubClass == H5T_INTEGER || eSubClass == H5T_FLOAT || eSubClass == H5T_COMPOUND
+#ifdef H5T_COMPLEX
+                                           || eSubClass == H5T_COMPLEX
+#endif
+                                           ))
                             ? NisarDataset::GetGDALDataType(hSubType) : GDT_Unknown;
                     std::string sDataTypeDesc = "(unknown)";
                     if (eSubDataType == GDT_Unknown && poDS->m_bDumpEnabled) {

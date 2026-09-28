@@ -224,6 +224,11 @@ def test_dump_root_missing(granules):
         _open(granules, "GCOV", DUMP="YES", DUMP_ROOT="/no/such/group")
 
 
+def test_dump_root_dataset_rejected(granules):
+    with pytest.raises(RuntimeError):
+        _open(granules, "GCOV", DUMP="YES", DUMP_ROOT=IDENT + "/productType")
+
+
 def test_dump_mode_invalid(granules):
     with pytest.raises(RuntimeError):
         _open(granules, "GCOV", DUMP="YES", DUMP_MODE="BOGUS")

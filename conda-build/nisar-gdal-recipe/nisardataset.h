@@ -155,7 +155,7 @@ class NisarDataset final : public GDALPamDataset
     // Static callback for H5Ovisit
     static herr_t MetadataVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
 
-    void LoadDumpMetadata();
+    bool LoadDumpMetadata();
     static herr_t DumpVisitCallback(hid_t hObject, const char *name, const H5O_info2_t *info, void *op_data);
 
     void ReadIdentificationMetadata();
