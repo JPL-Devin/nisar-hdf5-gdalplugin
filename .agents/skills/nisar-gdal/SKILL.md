@@ -10,7 +10,7 @@ description: Read NISAR HDF5 products (RSLC, RIFG, RUNW, GSLC, GCOV, GUNW, GOFF,
 plugin directory (`$CONDA_PREFIX/lib/gdalplugins/gdal_NISAR.so` / `.dylib`). It is not a Python
 package — there is nothing to import; use the GDAL CLI or `osgeo.gdal`.
 
-This document describes driver **v0.7.0 built against GDAL 3.12**. Anything marked *historical*
+This document describes driver **v0.7.1 built against GDAL 3.12**. Anything marked *historical*
 or *observed* comes from earlier release notes or field notes and has not been re-verified against
 the current source. When in doubt, the driver's own output (`gdalinfo`, `CPL_DEBUG`) wins.
 
@@ -367,14 +367,14 @@ h5py/xarray with a whole-layer page buffer. Build workflows around block-wise re
 
 ```bash
 mamba create -n nisar-env -c nisar-forge -c conda-forge gdal-driver-nisar && conda activate nisar-env
-mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.0     # pin in pipelines
+mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.1     # pin in pipelines
 ```
 
 Verify from the binary, not just `conda list`:
 
 ```bash
 gdalinfo --formats | grep NISAR    # "NISAR -raster- (ro…): NISAR HDF5"
-gdalinfo --format NISAR            # DRIVER_VERSION "v0.7.0 (Build Date: …)" + open option list
+gdalinfo --format NISAR            # DRIVER_VERSION "v0.7.1 (Build Date: …)" + open option list
 gdalinfo --version                 # a broken plugin errors on every GDAL invocation
 ```
 
@@ -382,7 +382,7 @@ Gotchas:
 
 - A conda update can report success while leaving the old `gdal_NISAR.so` in place (*observed*).
   If `DRIVER_VERSION` has not moved, `conda remove gdal-driver-nisar` then install again.
-- The plugin is built against a pinned GDAL (`3.12` for 0.7.0). Mixing it with another GDAL
+- The plugin is built against a pinned GDAL (`3.12` for 0.7.1). Mixing it with another GDAL
   produces load errors or a missing `NISAR` entry in `--formats`.
 - `GLIBC_2.38 not found` means the Linux binary is newer than the host libc (older JupyterHub
   images) — needs a rebuild, not configuration.
