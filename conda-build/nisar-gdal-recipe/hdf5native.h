@@ -95,7 +95,7 @@ struct DatasetInfo {
 struct ChunkRecord {
     std::vector<uint64_t> anOffset;        // element offsets, rank entries
     uint32_t nFilterMask = 0;
-    uint64_t nAddr = 0;                    // file address, relative to base
+    uint64_t nAddr = 0;                    // physical file offset (superblock base applied)
     uint64_t nSize = 0;                    // stored bytes
 };
 

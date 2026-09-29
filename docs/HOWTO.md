@@ -900,6 +900,7 @@ These are GDAL configuration options: set them as environment variables, with `-
 | --- | --- | --- |
 | `NISAR_PREFETCH_GRID` | `1` | Side of the N×N grid of HDF5 chunks coalesced into one range request on a cache miss. `1` fetches only the requested chunk (best for tile servers, QGIS and small windows). Larger values such as `24` coalesce many chunks into one large read, much faster for full-scene batch processing. |
 | `NISAR_MAX_MEGAFETCH_BYTES` | `16777216` (16 MiB) | Upper bound on one coalesced read, so a large `NISAR_PREFETCH_GRID` cannot produce requests too big for the network or memory. |
+| `NISAR_NATIVE_HDF5` | `NO` | Experimental. `YES` builds the chunk map with a built-in read-only HDF5 metadata parser instead of `H5Dchunk_iter`; any unsupported structure falls back to libhdf5 automatically. `CPL_DEBUG=NISAR_CHUNKMAP` logs which path was used. |
 | `NISAR_MAX_VIRTUAL_OVR` | `16` | Largest decimation factor for which a virtual overview is synthesised. `1` disables virtual overviews. |
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar under `/tmp/` describing the HDF5 chunk map of the opened raster, for Zarr / xarray tooling. Debug and interoperability only. |
 | `GDAL_NUM_THREADS` | GDAL default | Threads used to decompress chunks in parallel. `ALL_CPUS` is reasonable. |

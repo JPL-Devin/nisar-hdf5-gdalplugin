@@ -43,7 +43,8 @@ frequencyB HVHV, the 21-band GCOV `incidenceAngle` cube, RSLC HH, GSLC HH and GU
 
 ## Synthetic coverage (`nisar_chunkmap_synth`)
 
-Each file has 18 chunked datasets (filtered/unfiltered, partially written so some chunks are missing) at the
+User-block files check that chunk addresses are reported as physical file offsets (superblock base applied),
+matching `H5Dchunk_iter`. Each file has 18 chunked datasets (filtered/unfiltered, partially written so some chunks are missing) at the
 root, inside a 20 000-link group (`/big`, dense for v1.8+: fractal heap with nested indirect blocks + v2 B-tree
 name index) and inside a subgroup in the middle of that group.
 
@@ -53,10 +54,12 @@ name index) and inside a subgroup in the middle of that group.
 | synth_sb2_v18.h5 | v2 / v2, dense groups | 18 | 0 | 0 | btree_v1 |
 | synth_sb3_v110.h5 | v3 / v2, dense groups, layout v4 | 17 | 1 | 0 | single_chunk, implicit, fixed_array (paged), extensible_array, btree_v2 |
 | synth_sb3_latest.h5 | v3 / v2, layout v4/v5 | 6 | 0 | 12 | btree_v2, fixed_array, implicit, single_chunk, extensible_array |
+| synth_sb0_userblock512.h5 | v0 / v1, 512-byte user block | 18 | 0 | 0 | btree_v1 |
+| synth_sb3_userblock4096.h5 | v3 / v2, 4096-byte user block, layout v4 | 17 | 1 | 0 | single_chunk, implicit, fixed_array (paged), extensible_array, btree_v2 |
 
 Divergences / fallbacks:
 
-- `synth_sb3_v110.h5:/earray_2d_inner_unlim` (dims 40x600, maxdims 40xUNLIMITED, chunk 8x8, extensible array
+- `synth_sb3_v110.h5` and `synth_sb3_userblock4096.h5`: `/earray_2d_inner_unlim` (dims 40x600, maxdims 40xUNLIMITED, chunk 8x8, extensible array
   with the unlimited dimension not first): **libhdf5 2.2.0 is wrong, native is correct.** `H5Dchunk_iter`,
   `H5Dget_chunk_info` and `H5Dget_chunk_info_by_coord` report swizzled/linearised offsets (e.g. `(0,8)`,
   `(0,24)`, ..., up to `(0,2992)` for a 600-column dataset), while `H5Dread` returns the correct values. Decoding

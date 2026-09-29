@@ -386,7 +386,7 @@ bool NisarRasterBand::MapChunksNative()
         return false;
     }
 
-    const int nBlocksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
+    const int nChunksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
     std::vector<NisarChunkInfo> aoChunks = m_aoAllChunks;
     for (const NisarHDF5Native::ChunkRecord &oRec : aoRecords) {
         int nBlockX = 0, nBlockY = 0;
@@ -398,7 +398,7 @@ bool NisarRasterBand::MapChunksNative()
             nBlockY = static_cast<int>(oRec.anOffset[0] / nBlockYSize);
             nBlockX = static_cast<int>(oRec.anOffset[1] / nBlockXSize);
         }
-        const int idx = nBlockY * nBlocksPerRow + nBlockX;
+        const int idx = nBlockY * nChunksPerRow + nBlockX;
         if (idx >= 0 && idx < static_cast<int>(aoChunks.size())) {
             aoChunks[idx].nOffset = static_cast<vsi_l_offset>(oRec.nAddr);
             aoChunks[idx].nLength = static_cast<size_t>(oRec.nSize);

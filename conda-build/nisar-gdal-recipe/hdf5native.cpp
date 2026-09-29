@@ -1145,16 +1145,23 @@ Status File::GetChunks(const DatasetInfo &oInfo, std::vector<ChunkRecord> &aoChu
     aoChunks.clear();
     if (oInfo.nLayoutClass != 2) return Fail(Status::ERR_NOT_CHUNKED, "dataset is not chunked");
     if (oInfo.nIndexAddr == UNDEF_ADDR) return Status::OK;  // no storage allocated yet
+    Status eStatus = Status::OK;
     switch (oInfo.eIndex) {
-        case ChunkIndex::BTREE_V1: return IterBTreeV1(oInfo, oInfo.nIndexAddr, -1, aoChunks, 0);
-        case ChunkIndex::SINGLE_CHUNK: return IterSingle(oInfo, aoChunks);
-        case ChunkIndex::IMPLICIT: return IterImplicit(oInfo, aoChunks);
-        case ChunkIndex::FIXED_ARRAY: return IterFixedArray(oInfo, aoChunks);
-        case ChunkIndex::EXTENSIBLE_ARRAY: return IterExtensibleArray(oInfo, aoChunks);
-        case ChunkIndex::BTREE_V2: return IterBTreeV2(oInfo, aoChunks);
-        case ChunkIndex::NONE: break;
+        case ChunkIndex::BTREE_V1: eStatus = IterBTreeV1(oInfo, oInfo.nIndexAddr, -1, aoChunks, 0); break;
+        case ChunkIndex::SINGLE_CHUNK: eStatus = IterSingle(oInfo, aoChunks); break;
+        case ChunkIndex::IMPLICIT: eStatus = IterImplicit(oInfo, aoChunks); break;
+        case ChunkIndex::FIXED_ARRAY: eStatus = IterFixedArray(oInfo, aoChunks); break;
+        case ChunkIndex::EXTENSIBLE_ARRAY: eStatus = IterExtensibleArray(oInfo, aoChunks); break;
+        case ChunkIndex::BTREE_V2: eStatus = IterBTreeV2(oInfo, aoChunks); break;
+        case ChunkIndex::NONE: return Fail(Status::ERR_INDEX, "no chunk index");
     }
-    return Fail(Status::ERR_INDEX, "no chunk index");
+    if (eStatus != Status::OK) return eStatus;
+    // Index entries are relative to the superblock base; callers get physical file offsets.
+    for (ChunkRecord &oRec : aoChunks) {
+        if (oRec.nAddr > UINT64_MAX - m_nBaseAddr) return Fail(Status::ERR_CORRUPT, "chunk address overflow");
+        oRec.nAddr += m_nBaseAddr;
+    }
+    return Status::OK;
 }
 
 Status File::IterBTreeV1(const DatasetInfo &oInfo, uint64_t nAddr, int nExpectedLevel,

@@ -113,11 +113,12 @@ hid_t MakeBigGroup(hid_t hParent, const char *pszName, int nLinks, bool bDense)
     return hGroup;
 }
 
-void WriteFile(const std::string &osPath, H5F_libver_t eLow, H5F_libver_t eHigh)
+void WriteFile(const std::string &osPath, H5F_libver_t eLow, H5F_libver_t eHigh, hsize_t nUserBlock = 0)
 {
     hid_t hFapl = H5Pcreate(H5P_FILE_ACCESS);
     H5Pset_libver_bounds(hFapl, eLow, eHigh);
     hid_t hFcpl = H5Pcreate(H5P_FILE_CREATE);
+    if (nUserBlock) Check(H5Pset_userblock(hFcpl, nUserBlock), "set_userblock");
     hid_t hFile = H5Fcreate(osPath.c_str(), H5F_ACC_TRUNC, hFcpl, hFapl);
     Check(hFile, osPath.c_str());
     H5Pclose(hFapl);
@@ -169,5 +170,7 @@ int main(int argc, char **argv)
     WriteFile(osDir + "/synth_sb2_v18.h5", H5F_LIBVER_V18, H5F_LIBVER_V18);
     WriteFile(osDir + "/synth_sb3_v110.h5", H5F_LIBVER_V110, H5F_LIBVER_LATEST);
     WriteFile(osDir + "/synth_sb3_latest.h5", H5F_LIBVER_LATEST, H5F_LIBVER_LATEST);
+    WriteFile(osDir + "/synth_sb0_userblock512.h5", H5F_LIBVER_EARLIEST, H5F_LIBVER_LATEST, 512);
+    WriteFile(osDir + "/synth_sb3_userblock4096.h5", H5F_LIBVER_V110, H5F_LIBVER_LATEST, 4096);
     return 0;
 }
