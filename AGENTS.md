@@ -159,7 +159,9 @@ Match the surrounding style instead of reformatting:
   `MASK` defaults to `NO`.
 - **Version bump** = three places: `version`/`build number` in `meta.yaml`, `DRIVER_VERSION`
   in `nisar.cpp`, and the assertion in `test_interpolation_earthaccess.py::test_driver_version`
-  (plus the version line in the skill file).
+  (plus the current-version lines in the skill file and `docs/HOWTO.md`, including its version
+  history table). README, HOWTO and the skill file are installed by `build.sh` into the package
+  under `share/doc/gdal-driver-nisar/`; AGENTS.md is not shipped.
 - **Docs are part of the change.** User-visible behaviour is documented in README.md
   (open options, config options, troubleshooting), `docs/HOWTO.md` and
   `.agents/skills/nisar-gdal/SKILL.md`; update them in the same PR.

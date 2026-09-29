@@ -28,4 +28,13 @@ if [ ! -f "$PREFIX/lib/gdalplugins/gdal_NISAR${SHLIB_EXT}" ]; then
     exit 1
 fi
 
+# User documentation. The recipe source is the recipe directory itself
+# (source: path: .), so the repository-level docs are reached through RECIPE_DIR.
+REPO_ROOT="$RECIPE_DIR/../.."
+DOC_DIR="$PREFIX/share/doc/${PKG_NAME}"
+mkdir -p "$DOC_DIR"
+cp "$REPO_ROOT/README.md" "$DOC_DIR/README.md"
+cp "$REPO_ROOT/docs/HOWTO.md" "$DOC_DIR/HOWTO.md"
+cp "$REPO_ROOT/.agents/skills/nisar-gdal/SKILL.md" "$DOC_DIR/SKILL.md"
+
 echo "SUCCESS: Plugin Built and Installed!"

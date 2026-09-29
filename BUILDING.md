@@ -17,7 +17,7 @@ The conda recipe and the C++ sources live together in `conda-build/nisar-gdal-re
 | ---- | ---- |
 | `meta.yaml` | Package name, version, build number, build/host/run dependencies and the package test (`gdalinfo --formats \| grep NISAR`). The `run` dependencies are pinned to the `gdal`, `libgdal-core` and `hdf5` minor versions that were present at build time (`pin_compatible(..., max_pin='x.x')`). |
 | `conda_build_config.yaml` | Variant pins: GDAL version (`3.12`), Python version and compiler versions (clang 16 on macOS, GCC 12 on Linux). |
-| `build.sh` | Runs CMake with `$PREFIX` as prefix, builds with `make`, installs to `$PREFIX/lib/gdalplugins/` and verifies that `gdal_NISAR${SHLIB_EXT}` exists. |
+| `build.sh` | Runs CMake with `$PREFIX` as prefix, builds with `make`, installs to `$PREFIX/lib/gdalplugins/` and verifies that `gdal_NISAR${SHLIB_EXT}` exists. Also copies `README.md`, `docs/HOWTO.md` and `.agents/skills/nisar-gdal/SKILL.md` (reached through `$RECIPE_DIR/../..`, since the recipe source is the recipe directory only) to `$PREFIX/share/doc/gdal-driver-nisar/`. |
 | `CMakeLists.txt` | Defines the `gdal_NISAR` MODULE target (C++17), links `GDAL::GDAL`, `HDF5::HDF5` and `zlib-ng` (falls back to `zlib` if `zlib-ng` is not found), and sets the `.dylib` suffix / no `lib` prefix required by GDAL plugins on macOS. |
 | `../../Dockerfile` (repository root) | Multi-arch AlmaLinux image with Miniconda, `conda-build`, `boa` and `conda-libmamba-solver`, used for the Linux builds. |
 
@@ -49,12 +49,16 @@ driver performs remote I/O through GDAL's virtual file system, not through HDF5'
 
 ## Versioning
 
-Before releasing, bump both of the following so that they match the package you are about to
+Before releasing, bump all of the following so that they match the package you are about to
 publish:
 
 - `version` (and reset `build: number`) in `conda-build/nisar-gdal-recipe/meta.yaml`
 - the `DRIVER_VERSION` metadata string in `conda-build/nisar-gdal-recipe/nisar.cpp`
   (shown by `gdalinfo --format NISAR`)
+- the `test_driver_version` assertion in `conda-build/tests/test_interpolation_earthaccess.py`
+  and the current-version references in `README.md`, `docs/HOWTO.md` (including the version
+  history table) and `.agents/skills/nisar-gdal/SKILL.md` — these files are shipped inside the
+  package, so they must describe the version being built
 
 ## Building for macOS (Native)
 
@@ -143,6 +147,7 @@ conda create -n nisar-test -c ./conda-bld -c conda-forge gdal-driver-nisar gdal
 conda activate nisar-test
 gdalinfo --formats | grep NISAR
 gdalinfo --format NISAR        # shows DRIVER_VERSION and the open-option list
+ls $CONDA_PREFIX/share/doc/gdal-driver-nisar/   # README.md HOWTO.md SKILL.md
 ```
 
 An end-to-end functional and performance test script against a GSLC product on S3 is provided
@@ -156,3 +161,8 @@ Upload the packages to the `nisar-forge` channel on Anaconda.org:
 ```bash
 anaconda upload --user nisar-forge conda-bld/<platform>/gdal-driver-nisar-*.conda
 ```
+
+Anaconda.org only hosts package files; the project documentation is not uploaded separately.
+The package page shows the `summary`/`description` from `meta.yaml` and links to `home`,
+`doc_url` and `dev_url`, and the same documents are installed with the package under
+`share/doc/gdal-driver-nisar/`.
