@@ -39,10 +39,11 @@ REPO_URL="https://github.com/ozzp/nisar-hdf5-gdalplugin/blob/main"
 sed -E \
     -e "s#\]\(<([^>]+)>\)#](${REPO_URL}/\1)#g" \
     -e "s#\]\(([^)#:<][^):]*)\)#](${REPO_URL}/\1)#g" \
-    -e "s#\]\(${REPO_URL}/docs/HOWTO\.md\)#](HOWTO.md)#g" \
+    -e "s#\]\(${REPO_URL}/docs/(HOWTO|AGENT_GUIDE)\.md\)#](\1.md)#g" \
     -e ':a' -e "s#(\]\(${REPO_URL}/[^)]*) ([^)]*\))#\1%20\2#" -e 'ta' \
     "$REPO_ROOT/README.md" > "$DOC_DIR/README.md"
 cp "$REPO_ROOT/docs/HOWTO.md" "$DOC_DIR/HOWTO.md"
+cp "$REPO_ROOT/docs/AGENT_GUIDE.md" "$DOC_DIR/AGENT_GUIDE.md"
 cp "$REPO_ROOT/.agents/skills/nisar-gdal/SKILL.md" "$DOC_DIR/SKILL.md"
 
 echo "SUCCESS: Plugin Built and Installed!"

@@ -370,7 +370,8 @@ mamba create -n nisar-env -c nisar-forge -c conda-forge gdal-driver-nisar && con
 mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.2     # pin in pipelines
 ```
 
-The package installs this document, the repository README and `docs/HOWTO.md` to
+The package installs this document, the repository README, `docs/HOWTO.md` and
+`docs/AGENT_GUIDE.md` (one-page map of the driver and its documents) to
 `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` (offline copy of the user documentation).
 
 Verify from the binary, not just `conda list`:
