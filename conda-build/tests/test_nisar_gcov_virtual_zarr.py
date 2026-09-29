@@ -196,6 +196,51 @@ def test_retarget(generated, tmp_path):
     assert {v[0] for v in refs.values() if isinstance(v, list)} == {"s3://bucket/granule.h5"}
 
 
+def test_retarget_rejects_unmatched_old_uri(generated, tmp_path):
+    _rc, _src, _out, outdir, gid = generated
+    new = tmp_path / "m.json"
+    rc = nvz.main(["retarget", str(outdir / f"nisar_gcov_{gid}.kerchunk.json"), "s3://bucket/granule.h5",
+                   "--old-uri", "https://example.invalid/other.h5", "-o", str(new)])
+    assert rc == 2
+    assert not new.exists()
+
+
+def test_signed_uris_rejected(generated, tmp_path):
+    _rc, src, _out, outdir, gid = generated
+    signed = "https://d1.cloudfront.net/g.h5?A-userid=u&Expires=1&Signature=x&Key-Pair-Id=k"
+    with pytest.raises(ValueError, match="signed"):
+        nvz.main(["generate", "--local-file", str(src), "--output-dir", str(tmp_path), "--remote-uri", signed])
+    with pytest.raises(ValueError, match="signed"):
+        nvz.main(["retarget", str(outdir / f"nisar_gcov_{gid}.kerchunk.json"), signed, "-o",
+                  str(tmp_path / "m.json")])
+
+
+def test_unreferenced_projection_and_cross_group_scales(tmp_path):
+    src = tmp_path / "g.h5"
+    grid = "/science/LSAR/GCOV/grids/frequencyB"
+    with h5py.File(src, "w") as f:
+        f["/science/LSAR/identification/granuleId"] = np.bytes_("NISAR_L2_PR_GCOV_SYNTHETIC_002")
+        coords = f.create_group("/science/LSAR/GCOV/metadata/coords")
+        cy, cx = _scales(f, coords, 4, 6, x0=10.0)
+        g = f.create_group(grid)
+        ly, lx = _scales(f, g, 4, 6, x0=30.0)
+        g["projection"] = np.uint32(32611)
+        hh = g.create_dataset("HHHH", data=np.ones((4, 6), "f4"), chunks=(2, 3), compression="gzip")
+        hh.dims[0].attach_scale(cy)
+        hh.dims[1].attach_scale(cx)
+        mask = g.create_dataset("mask", data=np.ones((4, 6), "u1"), chunks=(2, 3))
+        mask.dims[0].attach_scale(ly)
+        mask.dims[1].attach_scale(lx)
+    out = tmp_path / "out"
+    assert nvz.main(["generate", "--local-file", str(src), "--output-dir", str(out)]) == 0
+    gid = "NISAR_L2_PR_GCOV_SYNTHETIC_002"
+    refs = json.load(open(out / gid / f"nisar_gcov_{gid}.kerchunk.json"))["refs"]
+    assert "grids/frequencyB/projection/.zarray" in refs
+    dims = json.loads(refs["grids/frequencyB/HHHH/.zattrs"])["_ARRAY_DIMENSIONS"]
+    assert dims == ["metadata__coords__yCoordinates", "metadata__coords__xCoordinates"]
+    assert json.loads(refs["grids/frequencyB/mask/.zattrs"])["_ARRAY_DIMENSIONS"] == ["yCoordinates", "xCoordinates"]
+
+
 def test_seeded_selection_is_deterministic(monkeypatch):
     def fake(n):
         return {"umm": {"GranuleUR": f"NISAR_L2_PR_GCOV_{n:03d}", "RelatedUrls": []}, "meta": {}}

@@ -151,6 +151,21 @@ def redact_url(url):
     return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, "", ""))
 
 
+SIGNED_QUERY_KEYS = {"signature", "key-pair-id", "policy", "expires", "a-userid", "token",
+                     "x-amz-signature", "x-amz-credential", "x-amz-security-token", "x-amz-expires"}
+
+
+def require_unsigned_uri(uri, what):
+    """Refuse URIs carrying signatures/tokens so they never reach exported references."""
+    query = urllib.parse.urlsplit(uri).query
+    keys = {k.lower() for k, _ in urllib.parse.parse_qsl(query, keep_blank_values=True)}
+    found = sorted(keys & SIGNED_QUERY_KEYS)
+    if found:
+        raise ValueError(f"{what} looks like a signed/tokenised URL (query parameters {', '.join(found)}); "
+                         "pass the stable archive URI instead: " + redact_url(uri))
+    return uri
+
+
 def encode_float(v):
     v = float(v)
     if math.isnan(v):
@@ -269,7 +284,7 @@ def earthdata_login(strategy="auto"):
                 return s
             tried.append(f"{s}: not authenticated")
         except Exception as e:  # noqa: BLE001
-            tried.append(f"{s}: {e}")
+            tried.append(f"{s}: {type(e).__name__}")
     raise RuntimeError("Earthdata login failed (" + "; ".join(tried) + "). Provide "
                        "EARTHDATA_USERNAME/EARTHDATA_PASSWORD or EARTHDATA_TOKEN, or a "
                        "~/.netrc entry for urs.earthdata.nasa.gov.")
@@ -466,7 +481,7 @@ def open_source(sel, args):
         path = os.path.abspath(args.local_file)
         h5 = h5py.File(path, "r")
         if args.remote_uri:
-            uri = args.remote_uri
+            uri = require_unsigned_uri(args.remote_uri, "--remote-uri")
         elif g and g["https_links"]:
             uri = g["https_links"][0]
         else:
@@ -484,8 +499,13 @@ def open_source(sel, args):
         uri = g["https_links"][0]
         fs = earthaccess.get_fsspec_https_session()
         proto, opts = _remote_fs_options(uri, sel)
+    require_unsigned_uri(uri, "granule data link")
     fobj = fs.open(uri, mode="rb", block_size=args.block_size, cache_type="blockcache")
-    h5 = h5py.File(fobj, "r")
+    try:
+        h5 = h5py.File(fobj, "r")
+    except BaseException:
+        fobj.close()
+        raise
     return Source(h5, uri, args.access, proto, opts, fileobj=fobj)
 
 
@@ -705,8 +725,10 @@ def mark_dimscales(h5, datasets):
             if gpath in datasets:
                 datasets[gpath]["gridmap_of"].append(rec["path"])
     for rec in datasets.values():
+        rec["is_projection"] = bool(rec["gridmap_of"]) or (
+            rec["rank"] == 0 and rec["rel"].rsplit("/", 1)[-1] == "projection" and rec["dtype_class"] == "integer")
         rec["category"] = categorize(rec["rel"], rec["rank"], rec["is_dimscale"] or bool(rec["dimscale_of"]),
-                                     bool(rec["gridmap_of"]))
+                                     rec["is_projection"])
 
 
 # --------------------------------------------------------------------------------------
@@ -741,7 +763,7 @@ def plan_manifest(datasets, include_rank3=True):
         warns = []
         cls = rec["dtype_class"]
         wanted = rec["rank"] == 2 or (rec["rank"] == 3 and include_rank3)
-        supporting = bool(rec["dimscale_of"]) or bool(rec["gridmap_of"])
+        supporting = bool(rec["dimscale_of"]) or rec["is_projection"]
         if not (wanted or supporting):
             if rec["rank"] == 3:
                 rec["issues"].append({"kind": "rank-3", "severity": "info",
@@ -800,7 +822,13 @@ def zattrs_for(rec, datasets, root):
     for i in range(rec["rank"] or 0):
         tgt = rec["dims"][i] if rec["dims"] else None
         if tgt and tgt.startswith(root + "/"):
-            dims.append(tgt.rsplit("/", 1)[-1])
+            if tgt.rsplit("/", 1)[0] == rec["path"].rsplit("/", 1)[0]:
+                dims.append(tgt.rsplit("/", 1)[-1])
+            else:
+                name = tgt[len(root) + 1:].replace("/", "__")
+                dims.append(name)
+                issues.append(f"dimension {i} uses scale {tgt} from another group; named {name} "
+                              "because Zarr v2 dimension names cannot reference another group's coordinate")
         elif rec["rank"] == 1 and rec["dimscale_of"]:
             dims.append(rec["rel"].rsplit("/", 1)[-1])
         else:
@@ -1215,7 +1243,7 @@ def validate(src, refs, datasets, manifest_path, args):
 
     for rec in sorted(datasets.values(), key=lambda r: r["path"]):
         if rec["status"] not in (STATUS_OK, STATUS_WARN):
-            if rec["rank"] == 2 or rec["dimscale_of"] or rec["gridmap_of"]:
+            if rec["rank"] == 2 or rec["dimscale_of"] or rec["is_projection"]:
                 entry = {"hdf5_path": rec["path"], "status": rec["status"], "checks": {},
                          "note": "; ".join(i["detail"] for i in rec["issues"] if i["severity"] == "error")}
                 report["arrays"].append(entry)
@@ -1607,14 +1635,23 @@ def cmd_retarget(args):
     old = args.old_uri
     if old is None:
         old = json.loads(refs[".zattrs"])["nisar_virtual_zarr"]["source_uri"]
+    new = require_unsigned_uri(args.new_uri, "new URI")
+    targets = {v[0] for v in refs.values() if isinstance(v, list) and len(v) == 3}
+    if not targets:
+        print(f"error: {args.manifest} has no remote chunk references to retarget", file=sys.stderr)
+        return 2
+    if old not in targets:
+        print(f"error: no chunk references target {old}; manifest targets: {', '.join(sorted(targets))}",
+              file=sys.stderr)
+        return 2
     n = 0
     for k, v in refs.items():
-        if isinstance(v, list) and v[0] == old:
-            v[0] = args.new_uri
+        if isinstance(v, list) and len(v) == 3 and v[0] == old:
+            v[0] = new
             n += 1
     for key in (".zattrs",):
         za = json.loads(refs[key])
-        za.setdefault("nisar_virtual_zarr", {})["source_uri"] = args.new_uri
+        za.setdefault("nisar_virtual_zarr", {})["source_uri"] = new
         refs[key] = dumps(za)
     zm = json.loads(refs[".zmetadata"])
     zm["metadata"][".zattrs"] = json.loads(refs[".zattrs"])
@@ -1622,7 +1659,7 @@ def cmd_retarget(args):
     out = args.output or args.manifest
     with open(out, "w") as f:
         f.write(dumps(doc, separators=(",", ":")))
-    print(f"retargeted {n} references from {old} to {args.new_uri} -> {os.path.abspath(out)}")
+    print(f"retargeted {n} references from {old} to {new} -> {os.path.abspath(out)}")
     return 0
 
 

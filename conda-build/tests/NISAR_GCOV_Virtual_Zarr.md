@@ -78,8 +78,11 @@ python nisar_gcov_virtual_zarr.py retarget output/<granule_id>/nisar_gcov_<granu
     s3://sds-n-cumulus-prod-nisar-products/NISAR_L2_GCOV_BETA_V1/<UR>/<UR>.h5 -o manifest_s3.json
 ```
 
-If a pre-signed URL is ever used as a target, it has to be refreshed the same way before it
-expires; prefer keeping the stable URI in the manifest.
+`retarget` fails without writing anything if no chunk reference targets the old URI (the
+manifest's `source_uri`, or `--old-uri`). `generate --remote-uri` and `retarget` reject URLs
+whose query carries signatures or tokens (`Signature`, `Key-Pair-Id`, `Expires`,
+`X-Amz-Signature`, ...), so pre-signed URLs never end up in shared manifests. Always target the
+stable URI.
 
 ## Local-file fallback
 
@@ -120,7 +123,8 @@ passes and `3` when any validation failure was recorded (artifacts are still wri
   GDAL `SUBDATASETS`; the chunk table counts them and reports why any is not in the manifest.
 * Supporting arrays are also emitted and reported separately from the 2-D count: dimension-scale
   coordinates (`xCoordinates`, `yCoordinates`, ...), the scalar `projection` grid-mapping
-  variables, and numeric rank-3 metadata cubes (`--no-rank3` leaves the cubes out).
+  variables (always emitted, even if no array names them in `grid_mapping`), and numeric rank-3
+  metadata cubes (`--no-rank3` leaves the cubes out).
 * Chunk keys come from the HDF5 chunk index (`H5Dchunk_iter` via `h5py`, falling back to
   `H5Dget_chunk_info`); unallocated chunks get no key, so readers return `fill_value`, like HDF5.
   Contiguous datasets become one chunk; compact datasets are inlined.
@@ -128,7 +132,10 @@ passes and `3` when any validation failure was recorded (artifacts are still wri
   Fletcher32 -> `fletcher32`. Any other filter (LZF, SZIP, Blosc, ...), or a chunk whose filter
   mask skips a filter, makes the dataset `skipped_unsupported`.
 * Attributes are copied to `.zattrs` (bytes decoded to UTF-8, NaN/Inf as JSON strings,
-  `DIMENSION_LIST`/`REFERENCE_LIST` replaced by `_ARRAY_DIMENSIONS`). Scalar identification
+  `DIMENSION_LIST`/`REFERENCE_LIST` replaced by `_ARRAY_DIMENSIONS`). A dimension whose scale
+  lives in another group gets the qualified name `<group>__<scale>` (for example
+  `metadata__coords__xCoordinates`) and a warning, because Zarr v2 cannot link to a coordinate
+  in another group. This stops a same-named local coordinate from being attached instead. Scalar identification
   values are copied into the root `.zattrs` under `nisar_identification`.
 
 ### Chunk table columns
