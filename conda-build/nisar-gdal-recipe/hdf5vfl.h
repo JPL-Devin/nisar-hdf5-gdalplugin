@@ -20,6 +20,7 @@
 
 #include "cpl_port.h"
 #include <hdf5.h>
+#include <cstdint>
 
 // --------------------------------------------------------------------------
 // CRITICAL: Namespace isolation for out-of-tree plugins.
@@ -30,6 +31,9 @@ namespace NisarVFL {
     // All the heavy lifting (structs, static functions) stays hidden inside hdf5vfl.cpp
     hid_t HDF5VFLGetFileDriver();
     void HDF5VFLUnloadFileDriver();
+
+    // Process-wide counters of read callbacks served by this VFL (all files).
+    void HDF5VFLGetReadStats(uint64_t *pnReadCalls, uint64_t *pnBytesRead);
 }
 
 #endif /* HDF5VFL_H_INCLUDED_ */
