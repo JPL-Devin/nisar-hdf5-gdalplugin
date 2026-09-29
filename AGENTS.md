@@ -26,6 +26,7 @@ conda-build/nisar-gdal-recipe/
   CMakeLists.txt, build.sh, meta.yaml, conda_build_config.yaml   build + packaging
 conda-build/tests/                  pytest suite + shell/diagnostic scripts (see Testing)
 .agents/skills/nisar-gdal/SKILL.md  How to *use* the driver (connection strings, open options, gotchas)
+docs/AGENT_GUIDE.md                 One-page map: where the driver installs, which docs ship with it
 docs/HOWTO.md, Level_1_Product_Processing.md, L2 3D Data Cube Interpolation Implementation Plan.md
 ```
 
@@ -170,8 +171,9 @@ Match the surrounding style instead of reformatting:
 - **Version bump** = three places: `version`/`build number` in `meta.yaml`, `DRIVER_VERSION`
   in `nisar.cpp`, and the assertion in `test_interpolation_earthaccess.py::test_driver_version`
   (plus the current-version lines in the skill file and `docs/HOWTO.md`, including its version
-  history table). README, HOWTO and the skill file are installed by `build.sh` into the package
-  under `share/doc/gdal-driver-nisar/`; AGENTS.md is not shipped.
+  history table, and the release line in `docs/AGENT_GUIDE.md`). README, HOWTO, AGENT_GUIDE and
+  the skill file are installed by `build.sh` into the package under `share/doc/gdal-driver-nisar/`;
+  AGENTS.md is not shipped.
 - **Docs are part of the change.** User-visible behaviour is documented in README.md
   (open options, config options, troubleshooting), `docs/HOWTO.md` and
   `.agents/skills/nisar-gdal/SKILL.md`; update them in the same PR.
