@@ -17,7 +17,7 @@ The conda recipe and the C++ sources live together in `conda-build/nisar-gdal-re
 | ---- | ---- |
 | `meta.yaml` | Package name, version, build number, build/host/run dependencies and the package test (`gdalinfo --formats \| grep NISAR`). The `run` dependencies are pinned to the `gdal`, `libgdal-core` and `hdf5` minor versions that were present at build time (`pin_compatible(..., max_pin='x.x')`). |
 | `conda_build_config.yaml` | Variant pins: GDAL version (`3.12`), Python version and compiler versions (clang 16 on macOS, GCC 12 on Linux). |
-| `build.sh` | Runs CMake with `$PREFIX` as prefix, builds with `make`, installs to `$PREFIX/lib/gdalplugins/` and verifies that `gdal_NISAR${SHLIB_EXT}` exists. Also copies `README.md`, `docs/HOWTO.md` and `.agents/skills/nisar-gdal/SKILL.md` (reached through `$RECIPE_DIR/../..`, since the recipe source is the recipe directory only) to `$PREFIX/share/doc/gdal-driver-nisar/`; repository-relative links in the README are rewritten to the installed `HOWTO.md` or to GitHub so the offline copy has no dead links. |
+| `build.sh` | Runs CMake with `$PREFIX` as prefix, builds with `make`, installs to `$PREFIX/lib/gdalplugins/` and verifies that `gdal_NISAR${SHLIB_EXT}` exists. Also copies `README.md`, `docs/HOWTO.md`, `docs/AGENT_GUIDE.md` and `.agents/skills/nisar-gdal/SKILL.md` (reached through `$RECIPE_DIR/../..`, since the recipe source is the recipe directory only) to `$PREFIX/share/doc/gdal-driver-nisar/`; repository-relative links in the README are rewritten to the installed `HOWTO.md` or to GitHub so the offline copy has no dead links. |
 | `CMakeLists.txt` | Defines the `gdal_NISAR` MODULE target (C++17), links `GDAL::GDAL`, `HDF5::HDF5` and `zlib-ng` (falls back to `zlib` if `zlib-ng` is not found), and sets the `.dylib` suffix / no `lib` prefix required by GDAL plugins on macOS. |
 | `../../Dockerfile` (repository root) | Multi-arch AlmaLinux image with Miniconda, `conda-build`, `boa` and `conda-libmamba-solver`, used for the Linux builds. |
 
@@ -147,7 +147,7 @@ conda create -n nisar-test -c ./conda-bld -c conda-forge gdal-driver-nisar gdal
 conda activate nisar-test
 gdalinfo --formats | grep NISAR
 gdalinfo --format NISAR        # shows DRIVER_VERSION and the open-option list
-ls $CONDA_PREFIX/share/doc/gdal-driver-nisar/   # README.md HOWTO.md SKILL.md
+ls $CONDA_PREFIX/share/doc/gdal-driver-nisar/   # README.md HOWTO.md SKILL.md AGENT_GUIDE.md
 ```
 
 An end-to-end functional and performance test script against a GSLC product on S3 is provided

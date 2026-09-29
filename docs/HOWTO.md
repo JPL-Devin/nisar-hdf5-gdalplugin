@@ -113,7 +113,7 @@ Pin an exact version in any processing pipeline whose outputs you intend to comp
 mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.2
 ```
 
-The package also installs this guide, the repository `README.md` and the `nisar-gdal` skill document to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` for offline reference.
+The package also installs this guide, the repository `README.md`, the `nisar-gdal` skill document and `AGENT_GUIDE.md` (a one-page map of the driver and its documents for AI agents) to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` for offline reference.
 
 Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `conda-build/nisar-gdal-recipe/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
 

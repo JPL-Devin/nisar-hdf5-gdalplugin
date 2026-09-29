@@ -46,6 +46,7 @@ test:
     - test -f $PREFIX/share/doc/gdal-driver-nisar/README.md
     - test -f $PREFIX/share/doc/gdal-driver-nisar/HOWTO.md
     - test -f $PREFIX/share/doc/gdal-driver-nisar/SKILL.md
+    - test -f $PREFIX/share/doc/gdal-driver-nisar/AGENT_GUIDE.md
 
 about:
   home: https://github.com/ozzp/nisar-hdf5-gdalplugin
