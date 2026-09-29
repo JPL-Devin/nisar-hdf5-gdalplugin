@@ -1,5 +1,5 @@
 {% set name = "gdal-driver-nisar" %}
-{% set version = "0.7.0" %}
+{% set version = "0.7.2" %}
 
 package:
   name: {{ name|lower }}
@@ -9,7 +9,7 @@ source:
   path: .
 
 build:
-  number: 1
+  number: 0
   skip: true  # [win]  # Don't have a bld.bat for Windows
 
 requirements:
@@ -43,17 +43,25 @@ test:
 
   commands:
     - gdalinfo --formats | grep NISAR
+    - test -f $PREFIX/share/doc/gdal-driver-nisar/README.md
+    - test -f $PREFIX/share/doc/gdal-driver-nisar/HOWTO.md
+    - test -f $PREFIX/share/doc/gdal-driver-nisar/SKILL.md
 
 about:
   home: https://github.com/ozzp/nisar-hdf5-gdalplugin
   license: Apache-2.0
   license_file: ../../LICENSE
   summary: 'A GDAL plugin to read NISAR HDF5 files.'
-  description: | 
-    A high-performance C++ GDAL plugin providing ROS3/S3 streaming capabilities 
-    and block-optimized reading for NASA NISAR HDF5 products.
+  description: |
+    A high-performance, read-only C++ GDAL plugin for NASA-ISRO NISAR HDF5 products
+    (L1 RSLC/RIFG/RUNW, L2 GSLC/GCOV/GUNW/GOFF, L3 SME2): chunk-aligned block reads,
+    coalesced range requests for S3/HTTPS access through GDAL VSI, georeferencing,
+    validity masks, metadata-cube interpolation and an h5dump-style NISAR_DUMP domain.
+    User documentation (README, HOWTO and the nisar-gdal skill) is installed to
+    $CONDA_PREFIX/share/doc/gdal-driver-nisar/ and published at the doc_url below.
+  doc_url: https://github.com/ozzp/nisar-hdf5-gdalplugin/blob/main/docs/HOWTO.md
   dev_url: https://github.com/ozzp/nisar-hdf5-gdalplugin
-  
-  extra:
+
+extra:
   recipe-maintainers:
     - ozzp

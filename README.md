@@ -78,7 +78,9 @@ conda environment and run:
 conda install -c nisar-forge -c conda-forge gdal-driver-nisar
 ```
 
-This installs the driver together with a compatible `gdal`, `libgdal-core` and `hdf5`.
+This installs the driver together with a compatible `gdal`, `libgdal-core` and `hdf5`. A copy
+of this README, [docs/HOWTO.md](docs/HOWTO.md) and the `nisar-gdal` skill document is installed
+to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` for offline reference.
 
 > **Tip:** if you already have GDAL in the environment and conda refuses to solve, the
 > installed GDAL is probably a different minor version than the plugin was built against.
