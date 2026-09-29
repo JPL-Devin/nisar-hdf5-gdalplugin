@@ -21,6 +21,7 @@ add_library(gdal_NISAR MODULE
     nisarinterpolated.cpp
     nisarinterpolatedrasterband.cpp
     hdf5vfl.cpp
+    hdf5native.cpp
 )
 
 # On macOS, GDAL plugins MUST have a .dylib extension.
@@ -60,3 +61,19 @@ endif()
 # Install the compiled plugin to the correct GDAL plugin directory.
 install(TARGETS gdal_NISAR
         LIBRARY DESTINATION lib/gdalplugins)
+
+# ---------------------------------------------------------
+# Optional: native HDF5 chunk-map validation / benchmark tool
+# ---------------------------------------------------------
+option(NISAR_BUILD_CHUNKMAP_BENCH "Build the nisar_chunkmap_bench validation/benchmark tool" OFF)
+if(NISAR_BUILD_CHUNKMAP_BENCH)
+    add_executable(nisar_chunkmap_bench
+        tools/nisar_chunkmap_bench.cpp
+        hdf5native.cpp
+        hdf5vfl.cpp
+    )
+    target_link_libraries(nisar_chunkmap_bench PRIVATE GDAL::GDAL HDF5::HDF5)
+
+    add_executable(nisar_chunkmap_synth tools/nisar_chunkmap_synth.cpp)
+    target_link_libraries(nisar_chunkmap_synth PRIVATE HDF5::HDF5)
+endif()

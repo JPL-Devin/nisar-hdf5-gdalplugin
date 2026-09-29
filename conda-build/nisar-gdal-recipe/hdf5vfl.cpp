@@ -4,6 +4,7 @@
 #include "cpl_vsi.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <cstring> // For memset
 
@@ -11,6 +12,8 @@ namespace NisarVFL {
 
 static std::mutex gMutex;
 static hid_t hFileDriver = -1;
+static std::atomic<uint64_t> gnReadCalls{0};
+static std::atomic<uint64_t> gnBytesRead{0};
 
 #define MAXADDR ((static_cast<haddr_t>(1) << (8 * sizeof(haddr_t) - 1)) - 1)
 
@@ -106,6 +109,8 @@ static herr_t HDF5_vsil_read(H5FD_t *_file, H5FD_mem_t /* type */,
 {
     HDF5_vsil_t *fh = reinterpret_cast<HDF5_vsil_t *>(_file);
     VSIFSeekL(fh->fp, static_cast<vsi_l_offset>(addr), SEEK_SET);
+    gnReadCalls++;
+    gnBytesRead += size;
     return VSIFReadL(buf, size, 1, fh->fp) == 1 ? 0 : -1;
 }
 
@@ -220,6 +225,12 @@ void HDF5VFLUnloadFileDriver()
             hFileDriver = -1;
         }
     }
+}
+
+void HDF5VFLGetReadStats(uint64_t *pnReadCalls, uint64_t *pnBytesRead)
+{
+    if (pnReadCalls) *pnReadCalls = gnReadCalls.load();
+    if (pnBytesRead) *pnBytesRead = gnBytesRead.load();
 }
 
 } // namespace NisarVFL

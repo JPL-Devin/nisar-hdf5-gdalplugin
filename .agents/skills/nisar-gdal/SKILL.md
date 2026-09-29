@@ -345,6 +345,7 @@ reads remote files.
 |---|---|---|
 | `NISAR_PREFETCH_GRID` | `1` | Side of the N×N grid of HDF5 chunks coalesced into one range request when a block misses the cache (1 = one chunk). Keep `1` for tiled/interactive access; raise (e.g. `24`) for full-scene batch reads. |
 | `NISAR_MAX_MEGAFETCH_BYTES` | `16777216` (16 MiB) | Upper bound on one coalesced "mega-fetch" range request. |
+| `NISAR_NATIVE_HDF5` | `NO` | Experimental. `YES` builds the chunk map with a built-in read-only HDF5 metadata parser instead of `H5Dchunk_iter`; any unsupported structure falls back to libhdf5 automatically. `CPL_DEBUG=NISAR_CHUNKMAP` logs which path was used. |
 | `NISAR_MAX_VIRTUAL_OVR` | `16` | Largest virtual overview decimation factor. |
 | `NISAR_EXPORT_ZARR` | `NO` | Write a kerchunk-style virtual Zarr sidecar JSON to `/tmp/nisar_kerchunk<dataset>.json` on first chunk map. Debug/interop only. |
 | `GDAL_NUM_THREADS` | GDAL default | Parallel chunk decompression. `ALL_CPUS` is reasonable. |

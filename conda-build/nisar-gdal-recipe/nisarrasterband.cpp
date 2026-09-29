@@ -42,6 +42,8 @@
 #include "nisaroverviewband.h"
 #include "nisardataset.h"
 #include "nisar_priv.h"
+#include "hdf5native.h"
+#include "hdf5vfl.h"
 
 thread_local bool NisarRasterBand::bDisableOverviewRouting = false;
 
@@ -304,8 +306,26 @@ void NisarRasterBand::MapChunks()
         return 0; 
     };
 
-    // Fire the Iterator
-    H5Dchunk_iter(poGDS->GetDatasetHandle(), H5P_DEFAULT, chunk_cb, &ctx);
+    const bool bNativeMapped =
+        CPLTestBool(CPLGetConfigOption("NISAR_NATIVE_HDF5", "NO")) && MapChunksNative();
+
+    if (!bNativeMapped) {
+        uint64_t nVFLCalls0 = 0, nVFLBytes0 = 0, nVFLCalls1 = 0, nVFLBytes1 = 0;
+        NisarVFL::HDF5VFLGetReadStats(&nVFLCalls0, &nVFLBytes0);
+        const auto tStart = std::chrono::steady_clock::now();
+
+        // Fire the Iterator
+        H5Dchunk_iter(poGDS->GetDatasetHandle(), H5P_DEFAULT, chunk_cb, &ctx);
+
+        const double dfMs = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - tStart).count();
+        NisarVFL::HDF5VFLGetReadStats(&nVFLCalls1, &nVFLBytes1);
+        CPLDebug("NISAR_CHUNKMAP",
+                 "path=libhdf5 band=%d time_ms=%.3f vfl_reads=%llu vfl_bytes=%llu",
+                 nBand, dfMs,
+                 static_cast<unsigned long long>(nVFLCalls1 - nVFLCalls0),
+                 static_cast<unsigned long long>(nVFLBytes1 - nVFLBytes0));
+    }
 
     // Opt-in Kerchunk Sidecar Generation
     if (CPLTestBool(CPLGetConfigOption("NISAR_EXPORT_ZARR", "NO"))) {
@@ -324,6 +344,78 @@ void NisarRasterBand::MapChunks()
     }
 
     m_bChunksMapped = true;
+}
+
+// Builds m_aoAllChunks with the native parser; returns false (m_aoAllChunks untouched) on any failure.
+bool NisarRasterBand::MapChunksNative()
+{
+    NisarDataset *poGDS = static_cast<NisarDataset *>(this->poDS);
+    const auto tStart = std::chrono::steady_clock::now();
+
+    char szDatasetName[1024];
+    const ssize_t nNameLen = H5Iget_name(poGDS->GetDatasetHandle(), szDatasetName, sizeof(szDatasetName));
+    if (nNameLen <= 0 || nNameLen >= static_cast<ssize_t>(sizeof(szDatasetName))) {
+        CPLDebug("NISAR_CHUNKMAP", "path=native band=%d fallback: dataset name unavailable", nBand);
+        return false;
+    }
+    const std::string osVSIPath = GetRawVSIPath();
+    const size_t nBlockSize = static_cast<size_t>(
+        std::strtoull(CPLGetConfigOption("NISAR_NATIVE_HDF5_BLOCK_SIZE", "0"), nullptr, 10));
+
+    std::unique_ptr<NisarHDF5Native::File> poFile;
+    NisarHDF5Native::DatasetInfo oInfo;
+    std::vector<NisarHDF5Native::ChunkRecord> aoRecords;
+    NisarHDF5Native::Status eStatus = NisarHDF5Native::File::Open(osVSIPath, poFile, nBlockSize);
+    if (eStatus == NisarHDF5Native::Status::OK)
+        eStatus = poFile->OpenDataset(szDatasetName, oInfo);
+    if (eStatus == NisarHDF5Native::Status::OK)
+        eStatus = poFile->GetChunks(oInfo, aoRecords);
+    if (eStatus != NisarHDF5Native::Status::OK) {
+        CPLDebug("NISAR_CHUNKMAP", "path=native band=%d dataset=%s fallback: %s (%s)", nBand,
+                 szDatasetName, NisarHDF5Native::StatusToString(eStatus),
+                 poFile ? poFile->GetLastError().c_str() : "open failed");
+        return false;
+    }
+
+    const int rank = oInfo.nRank;
+    if ((rank != 2 && rank != 3) ||
+        oInfo.anChunkDims[rank - 1] != static_cast<uint64_t>(nBlockXSize) ||
+        oInfo.anChunkDims[rank - 2] != static_cast<uint64_t>(nBlockYSize)) {
+        CPLDebug("NISAR_CHUNKMAP", "path=native band=%d dataset=%s fallback: rank/chunk shape mismatch",
+                 nBand, szDatasetName);
+        return false;
+    }
+
+    const int nChunksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
+    std::vector<NisarChunkInfo> aoChunks = m_aoAllChunks;
+    for (const NisarHDF5Native::ChunkRecord &oRec : aoRecords) {
+        int nBlockX = 0, nBlockY = 0;
+        if (rank == 3) {
+            if (oRec.anOffset[0] != static_cast<uint64_t>(nBand - 1)) continue;
+            nBlockY = static_cast<int>(oRec.anOffset[1] / nBlockYSize);
+            nBlockX = static_cast<int>(oRec.anOffset[2] / nBlockXSize);
+        } else {
+            nBlockY = static_cast<int>(oRec.anOffset[0] / nBlockYSize);
+            nBlockX = static_cast<int>(oRec.anOffset[1] / nBlockXSize);
+        }
+        const int idx = nBlockY * nChunksPerRow + nBlockX;
+        if (idx >= 0 && idx < static_cast<int>(aoChunks.size())) {
+            aoChunks[idx].nOffset = static_cast<vsi_l_offset>(oRec.nAddr);
+            aoChunks[idx].nLength = static_cast<size_t>(oRec.nSize);
+            aoChunks[idx].bIsMissing = false;
+        }
+    }
+    m_aoAllChunks.swap(aoChunks);
+
+    const double dfMs = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - tStart).count();
+    const NisarHDF5Native::IOStats &oStats = poFile->GetStats();
+    CPLDebug("NISAR_CHUNKMAP",
+             "path=native band=%d dataset=%s index=%s chunks=%zu time_ms=%.3f vsi_reads=%llu vsi_bytes=%llu",
+             nBand, szDatasetName, NisarHDF5Native::ChunkIndexToString(oInfo.eIndex), aoRecords.size(), dfMs,
+             static_cast<unsigned long long>(oStats.nReadCalls),
+             static_cast<unsigned long long>(oStats.nBytesRead));
+    return true;
 }
 
 std::string NisarRasterBand::GetRawVSIPath() const
