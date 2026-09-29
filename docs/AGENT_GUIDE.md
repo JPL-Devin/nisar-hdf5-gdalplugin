@@ -69,7 +69,6 @@ Repository-only documents (linked from the installed README, on GitHub):
 | `Level_1_Product_Processing.md` | How L1 radar-coordinate products are georeferenced with GCPs from `geolocationGrid`. |
 | `L2 3D Data Cube Interpolation Implementation Plan.md` | Design of the DEM-driven interpolation of 3-D metadata cubes (`QUANTITY` + `DEM_FILE`). |
 | `AGENTS.md` | Contributor guidance for agents editing the driver source (not shipped). |
-| `conda-build/tests/NISAR_GCOV_Virtual_Zarr.md` | GDAL-free Kerchunk/virtual-Zarr manifest workflow for GCOV granules. |
 
 ## Minimal first command
 
