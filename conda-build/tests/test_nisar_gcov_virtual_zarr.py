@@ -213,6 +213,11 @@ def test_signed_uris_rejected(generated, tmp_path):
     with pytest.raises(ValueError, match="signed"):
         nvz.main(["retarget", str(outdir / f"nisar_gcov_{gid}.kerchunk.json"), signed, "-o",
                   str(tmp_path / "m.json")])
+    for q in ("X-Goog-Signature=x&X-Goog-Credential=c", "X-Amz-Signature=x", "sv=2024&se=1&sig=x",
+              "sas_token=x", "urlSignature=x"):
+        with pytest.raises(ValueError, match="signed"):
+            nvz.require_unsigned_uri("https://h/g.h5?" + q, "uri")
+    assert nvz.require_unsigned_uri("https://h/g.h5?version=2&format=h5", "uri")
 
 
 def test_unreferenced_projection_and_cross_group_scales(tmp_path):

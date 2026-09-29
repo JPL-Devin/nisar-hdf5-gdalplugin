@@ -80,8 +80,9 @@ python nisar_gcov_virtual_zarr.py retarget output/<granule_id>/nisar_gcov_<granu
 
 `retarget` fails without writing anything if no chunk reference targets the old URI (the
 manifest's `source_uri`, or `--old-uri`). `generate --remote-uri` and `retarget` reject URLs
-whose query carries signatures or tokens (`Signature`, `Key-Pair-Id`, `Expires`,
-`X-Amz-Signature`, ...), so pre-signed URLs never end up in shared manifests. Always target the
+whose query carries signatures or tokens (`Signature`, `Key-Pair-Id`, `Expires`, any
+`X-Amz-*` / `X-Goog-*` / `X-Ms-*` key, Azure SAS `sig`/`se`/`sv`, or any key containing
+`signature`, `token`, `credential` or `expire`), so pre-signed URLs never end up in shared manifests. Always target the
 stable URI.
 
 ## Local-file fallback

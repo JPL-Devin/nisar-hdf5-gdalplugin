@@ -151,15 +151,22 @@ def redact_url(url):
     return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, "", ""))
 
 
-SIGNED_QUERY_KEYS = {"signature", "key-pair-id", "policy", "expires", "a-userid", "token",
-                     "x-amz-signature", "x-amz-credential", "x-amz-security-token", "x-amz-expires"}
+SIGNED_QUERY_KEYS = {"signature", "key-pair-id", "policy", "expires", "a-userid", "token", "sig", "se", "sv"}
+SIGNED_QUERY_PREFIXES = ("x-amz-", "x-goog-", "x-ms-")
+SIGNED_QUERY_FRAGMENTS = ("signature", "token", "credential", "expire")
+
+
+def is_signed_query_key(key):
+    k = key.lower()
+    return (k in SIGNED_QUERY_KEYS or k.startswith(SIGNED_QUERY_PREFIXES)
+            or any(f in k for f in SIGNED_QUERY_FRAGMENTS))
 
 
 def require_unsigned_uri(uri, what):
     """Refuse URIs carrying signatures/tokens so they never reach exported references."""
     query = urllib.parse.urlsplit(uri).query
     keys = {k.lower() for k, _ in urllib.parse.parse_qsl(query, keep_blank_values=True)}
-    found = sorted(keys & SIGNED_QUERY_KEYS)
+    found = sorted(k for k in keys if is_signed_query_key(k))
     if found:
         raise ValueError(f"{what} looks like a signed/tokenised URL (query parameters {', '.join(found)}); "
                          "pass the stable archive URI instead: " + redact_url(uri))
