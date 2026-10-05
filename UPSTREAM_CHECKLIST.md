@@ -7,7 +7,13 @@ based on OSGeo/gdal `master`, 3.14.0dev) has been prepared and validated:
 - registration: `gdal_dependent_format(nisar ... "GDAL_USE_HDF5")` in `frmts/CMakeLists.txt`,
   `NISAR` in `frmts/drivers.ini`, `GDALRegister_NISAR()` in `gcore/gdal_frmts.h` and
   `frmts/gdalallregister.cpp` (registered before HDF5)
-- `doc/source/drivers/raster/nisar.rst` + entry in `doc/source/drivers/raster/index.rst`
+- `doc/source/drivers/raster/nisar.rst` + entry in `doc/source/drivers/raster/index.rst`. Follows
+  GDAL's "Building documentation" guidance: `.. _raster.nisar:` label, `shortname` /
+  `versionadded` / `build_dependencies` / `supports_*` directives, `.. oo::` / `.. config::`
+  definitions with `:oo:` / `:config:` references, `:program:`, `code-block:: console|bash`,
+  anonymous `__` links. Verified with `cmake --build . --target html` (BUILD_DOCS=ON, Sphinx +
+  Doxygen) - no warnings from the NISAR page - and `ctest -R doc-spelling` after adding
+  `dataspace(s)` and `Kerchunk` to `doc/source/spelling_wordlist.txt`
 - `autotest/gdrivers/nisar.py` + `autotest/gdrivers/data/nisar/NISAR_L2_GCOV_synthetic.h5` (19 KB
   static fixture, generation recipe in the test header; no h5py/numpy needed at test time).
   Follows GDAL's automated-testing guidance: `pytestmark = require_driver("NISAR")`,
