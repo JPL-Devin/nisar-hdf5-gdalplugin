@@ -61,7 +61,7 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
                                                     const char *pszDatasetName)
 {
     std::string sResult;
-    hid_t hDataset = -1;
+    hid_t hDset = -1;
     hid_t hType = -1;
     hid_t hSpace = -1;
     hid_t hMemType = -1;
@@ -80,14 +80,14 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
     // Open dataset
-    hDataset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
-    if (hDataset < 0)
+    hDset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
+    if (hDset < 0)
     {
         goto cleanup_and_restore;  // Failed to open dataset
     }
 
     // Get type and verify it's a string
-    hType = H5Dget_type(hDataset);
+    hType = H5Dget_type(hDset);
     if (hType < 0 || H5Tget_class(hType) != H5T_STRING)
     {
         goto cleanup_and_restore;  // Not a string
@@ -99,7 +99,7 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
         nStringSize = 1;
 
     // Get space and verify it's 1D
-    hSpace = H5Dget_space(hDataset);
+    hSpace = H5Dget_space(hDset);
     if (hSpace < 0)
     {
         goto cleanup_and_restore;
@@ -129,9 +129,11 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
     // HDF5 will read each nStringSize-byte string from the file
     // and place it into a (nStringSize+1)-byte slot in pszBuffer,
     // adding the null terminator for us.
-    pszBuffer = (char *)CPLMalloc(nStrings * nMemStringSize);
-    if (H5Dread(hDataset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) <
-        0)
+    pszBuffer =
+        static_cast<char *>(VSI_MALLOC2_VERBOSE(nStrings, nMemStringSize));
+    if (pszBuffer == nullptr)
+        goto cleanup_and_restore;
+    if (H5Dread(hDset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) < 0)
     {
         goto cleanup_and_restore;  // Read failed
     }
@@ -162,8 +164,8 @@ cleanup_and_restore:
         H5Sclose(hSpace);
     if (hType >= 0)
         H5Tclose(hType);
-    if (hDataset >= 0)
-        H5Dclose(hDataset);
+    if (hDset >= 0)
+        H5Dclose(hDset);
 
     return sResult;
 }
@@ -178,7 +180,7 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
                                                 const char *pszDatasetName)
 {
     std::string sResult;
-    hid_t hDataset = -1;
+    hid_t hDset = -1;
     hid_t hType = -1;
     hid_t hSpace = -1;
     hid_t hMemType = -1;
@@ -192,14 +194,14 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
     // Open dataset
-    hDataset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
-    if (hDataset < 0)
+    hDset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
+    if (hDset < 0)
     {
         goto cleanup_and_restore;  // Failed to open dataset
     }
 
     // Get type and verify it's a string
-    hType = H5Dget_type(hDataset);
+    hType = H5Dget_type(hDset);
     if (hType < 0 || H5Tget_class(hType) != H5T_STRING)
     {
         goto cleanup_and_restore;  // Not a string
@@ -213,7 +215,7 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
     }
 
     // Get space and verify it's scalar
-    hSpace = H5Dget_space(hDataset);
+    hSpace = H5Dget_space(hDset);
     if (hSpace < 0 || H5Sget_simple_extent_ndims(hSpace) != 0)
     {
         // Note: This helper only supports scalar strings, not arrays of strings
@@ -226,9 +228,8 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
     H5Tset_strpad(hMemType, H5T_STR_NULLTERM);  // Explicitly ask for Null Term
 
     // Read the string
-    pszBuffer = (char *)CPLMalloc(nSize + 1);
-    if (H5Dread(hDataset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) >=
-        0)
+    pszBuffer = static_cast<char *>(CPLMalloc(nSize + 1));
+    if (H5Dread(hDset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) >= 0)
     {
         pszBuffer[nSize] = '\0';  // Ensure null termination
         sResult = pszBuffer;
@@ -246,8 +247,8 @@ cleanup_and_restore:
         H5Sclose(hSpace);
     if (hType >= 0)
         H5Tclose(hType);
-    if (hDataset >= 0)
-        H5Dclose(hDataset);
+    if (hDset >= 0)
+        H5Dclose(hDset);
 
     return sResult;
 }
@@ -263,10 +264,11 @@ int NisarDataset::Identify(GDALOpenInfo *poOpenInfo)
 
     // Explicit Driver Prefix Check
     // Always the fastest path.
+    // The connection string is ours whatever the file extension (NISAR
+    // granules are .h5, but do not depend on it).
     if (EQUALN(poOpenInfo->pszFilename, pszPrefix, nPrefixLen))
     {
-        return (CPLString(poOpenInfo->pszFilename).ifind(".h5") !=
-                std::string::npos);
+        return TRUE;
     }
 
     // Check the Header Buffer
@@ -455,40 +457,368 @@ void NisarDataset::ReadIdentificationMetadata()
     }
 }
 
-static std::string ReadStringAttribute(hid_t hLocation, const char *pszAttrName)
+// Helper to read an HDF5 attribute and add it to a CSL list
+static herr_t NISAR_AttributeCallback(hid_t hLocation, const char *attr_name,
+                                      const H5A_info_t * /*pAinfo*/,
+                                      void *op_data)
 {
-    hid_t hAttr = H5Aopen(hLocation, pszAttrName, H5P_DEFAULT);
-    if (hAttr < 0)
-        return "";
+    NISAR_AttrCallbackData *data =
+        static_cast<NISAR_AttrCallbackData *>(op_data);
 
-    std::string attr_val = "";
-    hid_t hAttrType = H5Aget_type(hAttr);
-    if (hAttrType >= 0)
+    // Skip HDF5 internal attributes that are not useful for metadata
+    if (EQUAL(attr_name, "DIMENSION_LIST") ||
+        EQUAL(attr_name, "REFERENCE_LIST") || EQUAL(attr_name, "CLASS") ||
+        EQUAL(attr_name, "NAME"))
     {
-        if (H5Tis_variable_str(hAttrType) > 0)
-        {
-            char *pszVal = nullptr;
-            if (H5Aread(hAttr, hAttrType, &pszVal) >= 0 && pszVal)
-            {
-                attr_val = pszVal;
-                H5free_memory(pszVal);
-            }
-        }
-        else
-        {  // Fixed-length string
-            size_t nSize = H5Tget_size(hAttrType);
-            char *pszVal = (char *)CPLMalloc(nSize + 1);
-            if (H5Aread(hAttr, hAttrType, pszVal) >= 0)
-            {
-                pszVal[nSize] = '\0';
-                attr_val = pszVal;
-            }
-            CPLFree(pszVal);
-        }
-        H5Tclose(hAttrType);
+        return 0;
     }
-    H5Aclose(hAttr);
-    return attr_val;
+
+    hid_t attr_id = -1;
+    hid_t attr_type = -1;
+    hid_t native_type = -1;
+    hid_t attr_space = -1;
+    std::string value_str;
+
+    attr_id =
+        H5Aopen_by_name(hLocation, ".", attr_name, H5P_DEFAULT, H5P_DEFAULT);
+    if (attr_id < 0)
+        return 0;
+
+    attr_type = H5Aget_type(attr_id);
+    attr_space = H5Aget_space(attr_id);
+
+    if (attr_type < 0 || attr_space < 0)
+    {
+        if (attr_type >= 0)
+            H5Tclose(attr_type);
+        if (attr_space >= 0)
+            H5Sclose(attr_space);
+        H5Aclose(attr_id);
+        return 0;
+    }
+
+    native_type = H5Tget_native_type(attr_type, H5T_DIR_ASCEND);
+    if (native_type < 0)
+    {
+        H5Tclose(attr_type);
+        H5Sclose(attr_space);
+        H5Aclose(attr_id);
+        return 0;
+    }
+
+    H5T_class_t type_class = H5Tget_class(native_type);
+    hssize_t n_points = H5Sget_simple_extent_npoints(attr_space);
+
+    // Process scalar attributes
+    if (n_points == 1)
+    {
+        if (type_class == H5T_STRING)
+        {
+            if (H5Tis_variable_str(native_type))
+            {
+                char *pszReadVL = nullptr;
+                if (H5Aread(attr_id, native_type, &pszReadVL) >= 0 && pszReadVL)
+                {
+                    value_str = pszReadVL;
+                    H5free_memory(pszReadVL);
+                }
+                else
+                    value_str = "(read error VL string)";
+            }
+            else
+            {  // Fixed length string
+                size_t type_size = H5Tget_size(native_type);
+                if (type_size > 0)
+                {
+                    char *pszReadFixed =
+                        static_cast<char *>(VSI_MALLOC_VERBOSE(type_size + 1));
+                    if (pszReadFixed)
+                    {
+                        if (H5Aread(attr_id, native_type, pszReadFixed) >= 0)
+                        {
+                            pszReadFixed[type_size] = '\0';
+                            value_str = pszReadFixed;
+                        }
+                        else
+                            value_str = "(read error fixed string)";
+
+                        VSIFree(pszReadFixed);
+                    }
+                    else
+                        value_str = "(memory alloc error)";
+                }
+                else
+                    value_str = "(zero size fixed string)";
+            }
+        }
+        else if (type_class == H5T_INTEGER)
+        {
+            long long llVal = 0;
+            if (H5Aread(attr_id, H5T_NATIVE_LLONG, &llVal) >= 0)
+                value_str = CPLSPrintf("%lld", llVal);
+            else
+                value_str = "(read error integer)";
+        }
+        else if (type_class == H5T_FLOAT)
+        {
+            // --- HDF5 2.0 BFLOAT16 SUPPORT ---
+            // HDF5's native type conversion implicitly handles bfloat16 datatypes here.
+            // By requesting H5T_NATIVE_DOUBLE as the destination memory type, the library
+            // automatically converts the 16-bit ml-float into standard double precision.
+            // Custom bitwise conversion is no longer required.
+            double dfVal = 0.0;
+            if (H5Aread(attr_id, H5T_NATIVE_DOUBLE, &dfVal) >= 0)
+                value_str = CPLSPrintf("%.18g", dfVal);  // Full precision
+            else
+                value_str = "(read error float)";
+        }
+#ifdef H5T_COMPLEX
+        else if (type_class == H5T_COMPLEX)
+        {
+            // HDF5 2.0 FIRST-CLASS COMPLEX SUPPORT
+            // Direct memory mapping without marshaling compounds.
+            hid_t base_type = H5Tget_super(native_type);
+
+            if (base_type >= 0)
+            {
+                if (H5Tequal(base_type, H5T_NATIVE_FLOAT) > 0)
+                {
+                    std::complex<float> cfVal;
+                    if (H5Aread(attr_id, H5T_NATIVE_FLOAT_COMPLEX, &cfVal) >= 0)
+                    {
+                        if (std::isnan(cfVal.real()) ||
+                            std::isnan(cfVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.10g + %.10gj",
+                                                   cfVal.real(), cfVal.imag());
+                    }
+                    else
+                        value_str = "(read error native complex float)";
+                }
+                else if (H5Tequal(base_type, H5T_NATIVE_DOUBLE) > 0)
+                {
+                    std::complex<double> cdVal;
+                    if (H5Aread(attr_id, H5T_NATIVE_DOUBLE_COMPLEX, &cdVal) >=
+                        0)
+                    {
+                        if (std::isnan(cdVal.real()) ||
+                            std::isnan(cdVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.18g + %.18gj",
+                                                   cdVal.real(), cdVal.imag());
+                    }
+                    else
+                        value_str = "(read error native complex double)";
+                }
+                else
+                {
+                    value_str = "(unhandled native complex base type)";
+                }
+                H5Tclose(base_type);
+            }
+        }
+#endif
+        // Handle Compound Type (Fallback for pre-HDF5 2.0 NISAR datasets)
+        else if (type_class == H5T_COMPOUND)
+        {
+            hid_t hRealType = -1;
+            hid_t hImagType = -1;
+            char *name1 = nullptr;
+            char *name2 = nullptr;
+            bool bIsComplex = false;
+            GDALDataType eBaseType = GDT_Unknown;
+
+            if (H5Tget_nmembers(native_type) == 2)
+            {
+                hRealType = H5Tget_member_type(native_type, 0);
+                hImagType = H5Tget_member_type(native_type, 1);
+
+                if (hRealType >= 0 && hImagType >= 0)
+                {
+                    if (H5Tequal(hRealType, hImagType) > 0)
+                    {
+                        name1 = H5Tget_member_name(native_type, 0);
+                        name2 = H5Tget_member_name(native_type, 1);
+
+                        // Check conventional naming ('r'/'i' or 'R'/'I')
+                        bool isReal =
+                            (name1 && (name1[0] == 'r' || name1[0] == 'R'));
+                        bool isImaginary =
+                            (name2 && (name2[0] == 'i' || name2[0] == 'I'));
+
+                        if (isReal && isImaginary)
+                        {
+                            bIsComplex = true;
+                            if (H5Tequal(hRealType, H5T_NATIVE_FLOAT) > 0)
+                                eBaseType = GDT_Float32;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_DOUBLE) > 0)
+                                eBaseType = GDT_Float64;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_SHORT) > 0)
+                                eBaseType = GDT_Int16;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_INT) > 0)
+                                eBaseType = GDT_Int32;
+                        }
+                    }
+                    H5Tclose(hRealType);
+                    hRealType = -1;
+                    H5Tclose(hImagType);
+                    hImagType = -1;
+                }
+                else
+                {
+                    if (hRealType >= 0)
+                        H5Tclose(hRealType);
+                    if (hImagType >= 0)
+                        H5Tclose(hImagType);
+                }
+
+                if (name1)
+                    H5free_memory(name1);
+                if (name2)
+                    H5free_memory(name2);
+            }
+
+            if (bIsComplex && eBaseType != GDT_Unknown)
+            {
+                if (eBaseType == GDT_Float32)
+                {
+                    std::complex<float> cfVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(std::complex<float>));
+                    H5Tinsert(mem_type, "r", 0, H5T_NATIVE_FLOAT);
+                    H5Tinsert(mem_type, "i", sizeof(float), H5T_NATIVE_FLOAT);
+                    if (H5Aread(attr_id, mem_type, &cfVal) >= 0)
+                    {
+                        if (std::isnan(cfVal.real()) ||
+                            std::isnan(cfVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.10g + %.10gj",
+                                                   cfVal.real(), cfVal.imag());
+                    }
+                    else
+                        value_str = "(read error compound complex float)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Float64)
+                {
+                    std::complex<double> cdVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(std::complex<double>));
+                    H5Tinsert(mem_type, "r", 0, H5T_NATIVE_DOUBLE);
+                    H5Tinsert(mem_type, "i", sizeof(double), H5T_NATIVE_DOUBLE);
+                    if (H5Aread(attr_id, mem_type, &cdVal) >= 0)
+                    {
+                        if (std::isnan(cdVal.real()) ||
+                            std::isnan(cdVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.18g + %.18gj",
+                                                   cdVal.real(), cdVal.imag());
+                    }
+                    else
+                        value_str = "(read error compound complex double)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Int16)
+                {
+                    ComplexInt16Attr ciVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(ComplexInt16Attr));
+                    H5Tinsert(mem_type, "r", HOFFSET(ComplexInt16Attr, r),
+                              H5T_NATIVE_SHORT);
+                    H5Tinsert(mem_type, "i", HOFFSET(ComplexInt16Attr, i),
+                              H5T_NATIVE_SHORT);
+                    if (H5Aread(attr_id, mem_type, &ciVal) >= 0)
+                        value_str = CPLSPrintf("%d + %dj", ciVal.r, ciVal.i);
+                    else
+                        value_str = "(read error complex int16)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Int32)
+                {
+                    ComplexInt32Attr ciVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(ComplexInt32Attr));
+                    H5Tinsert(mem_type, "r", HOFFSET(ComplexInt32Attr, r),
+                              H5T_NATIVE_INT);
+                    H5Tinsert(mem_type, "i", HOFFSET(ComplexInt32Attr, i),
+                              H5T_NATIVE_INT);
+                    if (H5Aread(attr_id, mem_type, &ciVal) >= 0)
+                        value_str = CPLSPrintf("%d + %dj", ciVal.r, ciVal.i);
+                    else
+                        value_str = "(read error complex int32)";
+
+                    H5Tclose(mem_type);
+                }
+                else
+                {
+                    value_str = "(unhandled complex base type)";
+                }
+            }
+            else
+            {
+                value_str = "(compound data)";
+            }
+        }
+        else if (type_class == H5T_VLEN)
+        {
+            value_str = "(variable-length data)";
+        }
+    }
+
+    if (value_str.empty())
+    {
+        const char *class_name = "Unknown";
+        switch (type_class)
+        {
+            case H5T_INTEGER:
+                class_name = "Integer";
+                break;
+            case H5T_FLOAT:
+                class_name = "Float";
+                break;
+            case H5T_STRING:
+                class_name = "String";
+                break;
+#ifdef H5T_COMPLEX
+            case H5T_COMPLEX:
+                class_name = "Complex";
+                break;
+#endif
+            case H5T_COMPOUND:
+                class_name = "Compound";
+                break;
+            case H5T_VLEN:
+                class_name = "VLEN";
+                break;
+            default:
+                break;
+        }
+        value_str = CPLSPrintf("(unhandled attr: class=%s, points=%lld)",
+                               class_name, static_cast<long long>(n_points));
+    }
+
+    std::string finalKey;
+    if (data->pszPrefix && data->pszPrefix[0] != '\0')
+        finalKey = std::string(data->pszPrefix) + "#" + attr_name;
+    else
+        finalKey = attr_name;
+
+    *(data->ppapszList) = CSLSetNameValue(*(data->ppapszList), finalKey.c_str(),
+                                          value_str.c_str());
+
+    // Cleanup HDF5 handles
+    H5Tclose(native_type);
+    H5Tclose(attr_type);
+    H5Sclose(attr_space);
+    H5Aclose(attr_id);
+    return 0;  // Success
 }
 
 // Helper to read a string attribute from an HDF5 object
@@ -543,7 +873,7 @@ static std::string ReadH5StringAttribute(hid_t hObjectID,
                 H5Tset_size(hMemType, nSize + 1);
                 H5Tset_strpad(hMemType, H5T_STR_NULLTERM);
 
-                char *pszVal = (char *)CPLMalloc(nSize + 1);
+                char *pszVal = static_cast<char *>(CPLMalloc(nSize + 1));
 
                 // Read using hMemType (Memory), not hAttrType (File)
                 if (H5Aread(hAttr, hMemType, pszVal) >= 0)
@@ -577,13 +907,6 @@ struct NISAR_AttrCallbackData_SetItem
     NisarDataset *poDS;  // Pointer to the dataset object
 };
 
-// Struct and Callback for Reading Identification Datasets
-struct NISAR_IdentCallbackData
-{
-    char ***ppapszList;  // Pointer to the CSL list pointer being built
-    hid_t hIdentGroup;   // Handle to the identification group
-};
-
 // Struct to pass data to H5Aiterate callback
 struct MetadataAttrCallbackData
 {
@@ -601,188 +924,10 @@ struct MetadataVisitData
 // Define struct to pass data to visitor
 struct NISARVisitorData
 {
-    std::vector<std::string> *pFoundPaths;  // Pointer to list in Open()
-    hid_t
-        hStartingGroupID;  // Pass group/file ID for opening datasets inside visitor
-    std::string sBasePath;  // Absolute path prefix for GDAL Subdatasets
+    std::vector<std::string> *pFoundPaths = nullptr;  // list in Open()
+    hid_t hStartingGroupID = -1;  // group/file ID for opening datasets
+    std::string sBasePath{};      // path prefix for GDAL subdatasets
 };
-
-// Callback for H5LiterateByName - reads scalar datasets in identification group
-static herr_t NISAR_IdentificationDatasetCallback(hid_t group_id,
-                                                  const char *member_name,
-                                                  const H5L_info2_t * /*linfo*/,
-                                                  void *op_data)
-{
-    NISAR_IdentCallbackData *data =
-        static_cast<NISAR_IdentCallbackData *>(op_data);
-    if (!data || !data->ppapszList || data->hIdentGroup < 0)
-        return H5_ITER_ERROR;
-
-    hid_t dset_id = -1;
-    hid_t dtype = -1;
-    hid_t dspace = -1;
-    std::string value_str = "(Error reading dataset)";
-    herr_t status = -1;
-    bool bValueSet = false;
-
-    // Check if the object is a dataset (optional, H5Dopen2 will fail otherwise)
-    H5O_info2_t oinfo;
-    if (H5Oget_info_by_name3(group_id, member_name, &oinfo, H5O_INFO_BASIC,
-                             H5P_DEFAULT) < 0 ||
-        oinfo.type != H5O_TYPE_DATASET)
-    {
-        return H5_ITER_CONT;  // Skip non-datasets
-    }
-
-    // Open the dataset
-    dset_id = H5Dopen2(data->hIdentGroup, member_name, H5P_DEFAULT);
-    if (dset_id < 0)
-    {
-        CPLError(CE_Warning, CPLE_AppDefined,
-                 "IdentCallback: Failed to open dataset '%s'", member_name);
-        return H5_ITER_CONT;  // Continue
-    }
-
-    dspace = H5Dget_space(dset_id);
-    dtype = H5Dget_type(dset_id);
-    if (dspace < 0 || dtype < 0)
-        goto ident_cleanup;
-
-    // Check if it's a scalar dataset
-    if (H5Sget_simple_extent_type(dspace) == H5S_SCALAR)
-    {
-        H5T_class_t type_class = H5Tget_class(dtype);
-        size_t type_size = H5Tget_size(dtype);
-
-        // Read Scalar Value (Primarily expecting strings)
-        if (type_class == H5T_STRING)
-        {
-            char *pszReadVL = nullptr;
-            char *pszReadFixed = nullptr;
-            bool bIsVariable = H5Tis_variable_str(dtype);
-            hid_t mem_type = H5Tcopy(H5T_C_S1);
-            if (mem_type < 0)
-                goto ident_cleanup;
-
-            if (bIsVariable)
-            {
-                H5Tset_size(mem_type, H5T_VARIABLE);
-                status = H5Dread(dset_id, mem_type, H5S_ALL, H5S_ALL,
-                                 H5P_DEFAULT, &pszReadVL);
-                if (status >= 0 && pszReadVL != nullptr)
-                {
-                    value_str = pszReadVL;
-                    bValueSet = true;
-                    H5free_memory(pszReadVL);
-                }
-                else
-                {
-                    CPLError(CE_Warning, CPLE_FileIO,
-                             "Failed read VLEN string dataset '%s'",
-                             member_name);
-                }
-            }
-            else if (type_size > 0)
-            {  // Fixed length string
-                // We must allocate type_size + 1 in the MEMORY type to hold the null terminator.
-                // If we use type_size, HDF5 will truncate the string to make room for \0.
-                H5Tset_size(mem_type, type_size + 1);
-                H5Tset_strpad(mem_type, H5T_STR_NULLTERM);
-                pszReadFixed = (char *)VSIMalloc(type_size + 1);
-                if (pszReadFixed)
-                {
-                    status = H5Dread(dset_id, mem_type, H5S_ALL, H5S_ALL,
-                                     H5P_DEFAULT, pszReadFixed);
-                    if (status >= 0)
-                    {
-                        pszReadFixed[type_size] = '\0';
-                        value_str = pszReadFixed;
-                        bValueSet = true;
-                    }
-                    else
-                    {
-                        CPLError(CE_Warning, CPLE_FileIO,
-                                 "Failed read fixed string dataset '%s'",
-                                 member_name);
-                    }
-                    VSIFree(pszReadFixed);
-                }
-                else
-                {
-                    CPLError(CE_Failure, CPLE_OutOfMemory,
-                             "Malloc failed for fixed string dataset '%s'",
-                             member_name);
-                }
-            }
-            if (mem_type >= 0)
-            {
-                H5Tclose(mem_type);
-                mem_type = -1;
-            }
-        }
-        // Add simple integer/float reads if needed for identification group
-        else if (type_class == H5T_INTEGER)
-        {
-            long long llVal = 0;
-            status = H5Dread(dset_id, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL,
-                             H5P_DEFAULT, &llVal);
-            if (status >= 0)
-            {
-                value_str = CPLSPrintf("%lld", llVal);
-                bValueSet = true;
-            }
-            else
-            {
-                CPLError(CE_Warning, CPLE_FileIO,
-                         "Failed read integer dataset '%s'", member_name);
-            }
-        }
-        else if (type_class == H5T_FLOAT)
-        {
-            double dfVal = 0.0;
-            status = H5Dread(dset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                             H5P_DEFAULT, &dfVal);
-            if (status >= 0)
-            {
-                value_str = CPLSPrintf("%.18g", dfVal);
-                bValueSet = true;
-            }
-            else
-            {
-                CPLError(CE_Warning, CPLE_FileIO,
-                         "Failed read float dataset '%s'", member_name);
-            }
-        }
-        else
-        {
-            value_str = "(unhandled scalar dataset type)";
-            bValueSet = true;
-        }
-    }
-    else
-    {
-        // Skip non-scalar datasets within identification group
-        CPLDebug("NISAR_IDENT_CB",
-                 "Skipping non-scalar dataset '%s' in identification group.",
-                 member_name);
-    }
-
-    // If we successfully read a value, add NAME=VALUE to list
-    if (bValueSet)
-    {
-        *(data->ppapszList) = CSLSetNameValue(*(data->ppapszList), member_name,
-                                              value_str.c_str());
-    }
-
-ident_cleanup:
-    if (dtype >= 0)
-        H5Tclose(dtype);
-    if (dspace >= 0)
-        H5Sclose(dspace);
-    if (dset_id >= 0)
-        H5Dclose(dset_id);
-    return 0;  // Continue H5Literate iteration
-}
 
 // Visitor callback function compatible with H5LiterateByName
 static herr_t NISAR_FindDatasetsVisitor(
@@ -806,7 +951,7 @@ static herr_t NISAR_FindDatasetsVisitor(
 
     // Log entry for every object visited
     CPLDebug("NISAR_VISITOR_DETAIL", "Visiting object: Path='%s', Type=%d",
-             name, (int)oinfo->type);
+             name, static_cast<int>(oinfo->type));
 
     // Filter 1: Only consider actual Datasets
     if (oinfo->type != H5O_TYPE_DATASET)
@@ -1136,7 +1281,7 @@ GDALDataType NisarDataset::GetGDALDataType(hid_t hH5Type)
     CPLError(CE_Warning, CPLE_AppDefined,
              "NisarDataset::GetGDALDataType(): Unhandled or unsupported HDF5 "
              "data type (Class: %d).",
-             (int)eHDF5Class);
+             static_cast<int>(eHDF5Class));
     return GDT_Unknown;  // Default fallback if no mapping found
 }
 
@@ -1166,7 +1311,7 @@ CPLErr NisarDataset::ReadGeoTransformAttribute(hid_t hObjectID,
         else
             CPLDebug("NISAR_ATTR",
                      "Attribute '%s' does not exist on object %lld.",
-                     pszAttrName, (long long)hObjectID);
+                     pszAttrName, static_cast<long long>(hObjectID));
         goto cleanup;
     }
 
@@ -1195,7 +1340,7 @@ CPLErr NisarDataset::ReadGeoTransformAttribute(hid_t hObjectID,
     {
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Attribute '%s' does not have 6 elements (found %lld).",
-                 pszAttrName, (long long)nPoints);
+                 pszAttrName, static_cast<long long>(nPoints));
         goto cleanup;
     }
 
@@ -1227,24 +1372,7 @@ cleanup:  // Label for resource cleanup
 /************************************************************************/
 
 NisarDataset::NisarDataset()
-    : hHDF5(H5I_INVALID_HID), hDataset(H5I_INVALID_HID), eDataType(GDT_Unknown),
-      pszFilename(nullptr), papszSubDatasets(nullptr),
-      m_poSRS(nullptr),  // Initialize SRS pointer
-      m_bGotSRS(false),  // Initialize SRS flag
-      m_bGotMetadata(false),
-      m_papszGlobalMetadata(nullptr),  // Initialize global metadata cache
-      m_bGotGlobalMetadata(false),     // Initialize global metadata flag
-      m_bIsLevel1(false), m_bIsLevel2(false), m_bIsLevel3(false),
-      m_bGotGeoTransform(false)
 {
-
-    // Initialize GT array cache if using caching pattern for it
-    m_adfGeoTransform[0] = 0.0;
-    m_adfGeoTransform[1] = 1.0;
-    m_adfGeoTransform[2] = 0.0;
-    m_adfGeoTransform[3] = 0.0;
-    m_adfGeoTransform[4] = 0.0;
-    m_adfGeoTransform[5] = 1.0;
 }
 
 /************************************************************************/
@@ -1368,8 +1496,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
             {
                 if (bIsVariable)
                 {
-                    char **pszVals =
-                        (char **)CPLMalloc(nTotalSize * sizeof(char *));
+                    char **pszVals = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nTotalSize, sizeof(char *)));
                     if (pszVals && H5Dread(hDset, hNativeDtype, H5S_ALL,
                                            H5S_ALL, H5P_DEFAULT, pszVals) >= 0)
                     {
@@ -1387,8 +1515,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBuffer =
-                        (char *)VSI_MALLOC_VERBOSE(nTotalSize * nFixedSize);
+                    char *pszBuffer = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nTotalSize, nFixedSize));
                     if (pszBuffer &&
                         H5Dread(hDset, hNativeDtype, H5S_ALL, H5S_ALL,
                                 H5P_DEFAULT, pszBuffer) >= 0)
@@ -1420,8 +1548,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                                     count, nullptr);
                 if (bIsVariable)
                 {
-                    char **pszValsHead =
-                        (char **)CPLMalloc(nHeadTail * sizeof(char *));
+                    char **pszValsHead = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, sizeof(char *)));
                     if (pszValsHead &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszValsHead) >= 0)
@@ -1436,8 +1564,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBufferHead =
-                        (char *)VSI_MALLOC_VERBOSE(nHeadTail * nFixedSize);
+                    char *pszBufferHead = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, nFixedSize));
                     if (pszBufferHead &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszBufferHead) >= 0)
@@ -1455,8 +1583,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                                     count, nullptr);
                 if (bIsVariable)
                 {
-                    char **pszValsTail =
-                        (char **)CPLMalloc(nHeadTail * sizeof(char *));
+                    char **pszValsTail = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, sizeof(char *)));
                     if (pszValsTail &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszValsTail) >= 0)
@@ -1471,8 +1599,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBufferTail =
-                        (char *)VSI_MALLOC_VERBOSE(nHeadTail * nFixedSize);
+                    char *pszBufferTail = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, nFixedSize));
                     if (pszBufferTail &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszBufferTail) >= 0)
@@ -1686,7 +1814,8 @@ static herr_t NISAR_DatasetMetadataCallback(hid_t hGroup, const char *pszName,
                     size_t nSize = H5Tget_size(hDtype);
                     if (nSize > 0)
                     {
-                        char *pszVal = (char *)CPLMalloc(nSize + 1);
+                        char *pszVal =
+                            static_cast<char *>(CPLMalloc(nSize + 1));
                         if (H5Dread(hDset, hDtype, H5S_ALL, H5S_ALL,
                                     H5P_DEFAULT, pszVal) >= 0)
                         {
@@ -2161,9 +2290,9 @@ NisarMetadataList NisarDataset::GetMetadata(const char *pszDomain)
 // Structure to pass state into the H5Ovisit callback
 struct NISAR_MetadataVisitData
 {
-    NisarDataset *poDS;
-    char **papszMetadata;  // CSL list being built
-    std::string sPrefix;   // Optional prefix if needed
+    NisarDataset *poDS = nullptr;
+    char **papszMetadata = nullptr;  // CSL list being built
+    std::string sPrefix{};           // Optional prefix if needed
 };
 
 // Callback for H5Ovisit to recursively read metadata
@@ -2371,15 +2500,13 @@ void NisarDataset::LoadMetadataDomain(const std::string &sKeyword)
 
 struct NISAR_DumpVisitData
 {
-    NisarDataset *poDS;
-    std::string sRoot;       // absolute path of the traversal root
-    char **papszLines;       // CSL list of output lines
-    size_t nMaxElements;     // element cap for printed DATA blocks
-    size_t nMaxStringChars;  // per-string cap for printed values
-    std::vector<std::string>
-        aosOpenGroups;  // groups whose '}' is still pending
-    std::map<std::string, std::string>
-        oVisitedObjects;  // object token -> first path
+    NisarDataset *poDS = nullptr;
+    std::string sRoot{};          // absolute path of the traversal root
+    char **papszLines = nullptr;  // CSL list of output lines
+    size_t nMaxElements = 0;      // element cap for printed DATA blocks
+    size_t nMaxStringChars = 0;   // per-string cap for printed values
+    std::vector<std::string> aosOpenGroups{};  // groups whose '}' is pending
+    std::map<std::string, std::string> oVisitedObjects{};  // token -> path
 };
 
 static std::string NisarDumpObjectKind(H5O_type_t eType)
@@ -3320,7 +3447,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     {
         pszSubdatasetPath = pszLastColon + 1;
         size_t nFilenameLen = pszLastColon - pszDataIdentifier;
-        pszActualFilename = (char *)CPLMalloc(nFilenameLen + 1);
+        pszActualFilename = static_cast<char *>(CPLMalloc(nFilenameLen + 1));
         strncpy(pszActualFilename, pszDataIdentifier, nFilenameLen);
         pszActualFilename[nFilenameLen] = '\0';
     }
@@ -3726,7 +3853,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                     sScienceRoot + "/";  // Store the absolute prefix
 
                 H5Ovisit(hScienceGroup, H5_INDEX_NAME, H5_ITER_NATIVE,
-                         NISAR_FindDatasetsVisitor, (void *)&visitor_data,
+                         NISAR_FindDatasetsVisitor, &visitor_data,
                          H5O_INFO_BASIC);
 
                 H5Gclose(hScienceGroup);
@@ -3776,7 +3903,8 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
                         for (int i = 0; i < nSubDim; ++i)
                         {
                             desc_val += CPLSPrintf(
-                                "%llu%s", (unsigned long long)adimsSub[i],
+                                "%llu%s",
+                                static_cast<unsigned long long>(adimsSub[i]),
                                 (i < nSubDim - 1) ? "x" : "");
                         }
                     }
@@ -4452,8 +4580,6 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
     // Could also check nRasterXSize == 0, but hDataset < 0 is sufficient
 
     // Initialize local variables
-    OGRSpatialReference *poSRS =
-        nullptr;                    // Pointer to the SRS object we might create
     hid_t hProjectionDataset = -1;  // Handle for the 'projection' dataset
     hid_t hAttribute =
         -1;                // Handle for attributes 'epsg_code' or 'spatial_ref'
@@ -4540,7 +4666,7 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                     poTmpSRS = nullptr;  // Prevent deletion
                     CPLDebug("NISAR_DRIVER", "Assigned SRS from EPSG...");
                     CPLDebug("NISAR_DRIVER", "Successfully imported EPSG:%d.",
-                             (int)epsg_code);
+                             static_cast<int>(epsg_code));
                     goto cleanup;  //Jump to cleanup AFTER successful assignment
                 }
                 else
@@ -4550,8 +4676,7 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                              "OGRSpatialReference.",
                              epsg_code);
                     delete poTmpSRS;
-                    poSRS = nullptr;  // Delete failed object
-                                      // Continue below to try WKT attribute
+                    // Continue below to try WKT attribute
                 }
             }
             else
@@ -4627,7 +4752,6 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                                 "Failed to import WKT from variable-length "
                                 "'spatial_ref' attribute.");
                             delete poTmpSRS;
-                            poSRS = nullptr;
                         }
                         // Free the variable length string buffer allocated by H5Aread
                         // Need the memory dataspace and type to reclaim? Docs say yes.
@@ -4657,8 +4781,8 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                     size_t nWktLen = H5Tget_size(hAttrType);
                     if (nWktLen > 0)
                     {
-                        pszWKT_Alloc = (char *)VSIMalloc(
-                            nWktLen + 1);  // Use VSI for GDAL consistency
+                        pszWKT_Alloc = static_cast<char *>(VSIMalloc(
+                            nWktLen + 1));  // Use VSI for GDAL consistency
                         if (pszWKT_Alloc)
                         {
                             status =
@@ -4939,12 +5063,11 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
     // DECLARE ALL VARIABLES AT THE TOP
     CPLErr eErr = CE_Failure;
     hid_t hGridGroup = -1;
-    hid_t hAttr = -1;
     hid_t hScalarDset = -1;
     OGRSpatialReference *poCRS = nullptr;
     std::vector<GDAL_GCP> gcp_list;
 
-    hid_t hEpsgDset;
+    hid_t hEpsgDset = -1;
     long long epsg_code = 0;
     std::vector<double> x_coords, y_coords, slant_ranges, azimuth_times;
     std::vector<double> swath_times;

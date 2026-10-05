@@ -82,9 +82,15 @@ a human must be the primary author, responsible for every line.
 
 These are not blocking for the standalone plugin, but GDAL reviewers will likely ask for them:
 
-- [ ] Compiler warnings under GDAL's flags: about 130 (`-Weffc++`, `-Wold-style-cast`,
-      `-Wreorder`, `-Wshadow`, unused functions/variables). GDAL CI builds with `-Werror`.
-      Remove the `#pragma message` in `nisardataset.h`.
+- [x] Compiler warnings under GDAL's flags (`-Weffc++`, `-Wold-style-cast`, `-Wreorder`,
+      `-Wshadow`, unused functions/variables): the driver now builds warning-free with
+      `add_gdal_driver()` on GCC; re-check with clang and MSVC in GDAL CI.
+- [x] GDAL development-practice pass (`doc/source/development/dev_practices.rst`): x*y
+      allocations use `VSI_MALLOC2_VERBOSE`, large `std::vector` sizes are guarded against
+      `std::bad_alloc`, classes with pointer members use `CPL_DISALLOW_COPY_ASSIGN`, no
+      old-style casts, lower-case `.cpp`/`.h` filenames, `.clang-format` applied.
+- [ ] Remove the `#pragma message` lines and the commented-out debug pragmas in
+      `nisardataset.h` (they print on every compile).
 - [ ] Deferred plugin loading: GDAL's HDF5 driver splits `Identify()` into
       `hdf5drivercore.cpp` (`CORE_SOURCES`, `NO_SHARED_SYMBOL_WITH_CORE`) so a plugin is only
       loaded when needed. `NisarDataset::Identify()` calls `H5Fopen`, so it cannot be moved into

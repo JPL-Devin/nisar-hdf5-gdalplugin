@@ -50,13 +50,14 @@ class NisarHDF5MaskBand;
 class NisarRasterBand final : public GDALPamRasterBand
 {
     friend class NisarDataset;
+    CPL_DISALLOW_COPY_ASSIGN(NisarRasterBand)
 
   private:
     bool m_bChunksMapped = false;
-    std::mutex m_oChunkMapMutex;
+    std::mutex m_oChunkMapMutex{};
     void MapChunks();
-    std::mutex m_oMutex;  // Protects shared VSI file pointers
-    std::mutex m_oMegaFetchMutex;
+    std::mutex m_oMutex{};  // Protects shared VSI file pointers
+    std::mutex m_oMegaFetchMutex{};
     VSILFILE *m_fp = nullptr;  // shared file pointer opened in the Dataset
     hid_t hH5Type = -1;        // Store copy of HDF5 native data type
     // Cached HDF5 handles
@@ -70,21 +71,21 @@ class NisarRasterBand final : public GDALPamRasterBand
 
     bool m_bHasMinMax = false;
 
-    std::vector<std::unique_ptr<NisarOverviewBand>> m_apoOverviews;
+    std::vector<std::unique_ptr<NisarOverviewBand>> m_apoOverviews{};
     NisarHDF5MaskBand *m_poMaskBand = nullptr;  // Cache the mask band
     bool m_bMaskBandOwned = false;
 
     struct NisarChunkInfo
     {
-        int nBlockX;
-        int nBlockY;
-        vsi_l_offset nOffset;
-        size_t nLength;
-        bool bIsMissing;
+        int nBlockX = 0;
+        int nBlockY = 0;
+        vsi_l_offset nOffset = 0;
+        size_t nLength = 0;
+        bool bIsMissing = true;
     };
 
     // The class-level cache for our B-Tree layout
-    std::vector<NisarChunkInfo> m_aoAllChunks;
+    std::vector<NisarChunkInfo> m_aoAllChunks{};
 
     bool ProcessAndCopyChunk(const GByte *pSrcData, size_t nSrcSize,
                              void *pDstData);

@@ -218,18 +218,29 @@ NisarRasterBand::NisarRasterBand(NisarDataset *poDSIn, int nBandIn)
     m_bNeedsEndianSwap = (fileOrder == H5T_ORDER_LE);
 #endif
     // 1. Calculate total blocks in the grid
-    int nBlocksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
-    int nBlocksPerCol = (nRasterYSize + nBlockYSize - 1) / nBlockYSize;
+    int nChunksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
+    int nChunksPerCol = (nRasterYSize + nBlockYSize - 1) / nBlockYSize;
 
     // Resize the class member vector!
-    m_aoAllChunks.resize(nBlocksPerRow * nBlocksPerCol);
+    try
+    {
+        m_aoAllChunks.resize(static_cast<size_t>(nChunksPerRow) *
+                             nChunksPerCol);
+    }
+    catch (const std::bad_alloc &)
+    {
+        CPLError(CE_Failure, CPLE_OutOfMemory,
+                 "Cannot allocate chunk map for %d x %d chunks", nChunksPerRow,
+                 nChunksPerCol);
+        return;
+    }
 
     // Initialize all chunks as missing (Sparse by default)
-    for (int y = 0; y < nBlocksPerCol; ++y)
+    for (int y = 0; y < nChunksPerCol; ++y)
     {
-        for (int x = 0; x < nBlocksPerRow; ++x)
+        for (int x = 0; x < nChunksPerRow; ++x)
         {
-            int idx = y * nBlocksPerRow + x;
+            int idx = y * nChunksPerRow + x;
             m_aoAllChunks[idx].nBlockX = x;
             m_aoAllChunks[idx].nBlockY = y;
             m_aoAllChunks[idx].nOffset = 0;
@@ -315,7 +326,7 @@ void NisarRasterBand::MapChunks()
     NisarDataset *poGDS = static_cast<NisarDataset *>(this->poDS);
 
     // Define Context Struct for the C-Callback
-    int nBlocksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
+    int nChunksPerRow = (nRasterXSize + nBlockXSize - 1) / nBlockXSize;
     int rank = H5Sget_simple_extent_ndims(m_hFileSpaceID);
 
     struct ChunkIterCtx
@@ -328,7 +339,7 @@ void NisarRasterBand::MapChunks()
         int nBand;
     };
 
-    ChunkIterCtx ctx = {&m_aoAllChunks, nBlocksPerRow, nBlockXSize,
+    ChunkIterCtx ctx = {&m_aoAllChunks, nChunksPerRow, nBlockXSize,
                         nBlockYSize,    rank,          nBand};
 
     // Define the Stateless Lambda Callback
@@ -513,7 +524,17 @@ bool NisarRasterBand::ProcessAndCopyChunk(const GByte *pSrcData,
         // resize() will not zero-initialize bytes if the capacity is already large enough
         if (tls_uncompressedData.size() < nUncompressedSize)
         {
-            tls_uncompressedData.resize(nUncompressedSize);
+            try
+            {
+                tls_uncompressedData.resize(nUncompressedSize);
+            }
+            catch (const std::bad_alloc &)
+            {
+                CPLError(CE_Failure, CPLE_OutOfMemory,
+                         "Cannot allocate %llu bytes for chunk decompression",
+                         static_cast<unsigned long long>(nUncompressedSize));
+                return false;
+            }
         }
 
         // -------------------------------------------------------------
@@ -665,9 +686,8 @@ bool NisarRasterBand::ProcessAndCopyChunk(const GByte *pSrcData,
             const GByte *src6 = pWorkingData + p6 * nElements;
             const GByte *src7 = pWorkingData + p7 * nElements;
 
-            size_t j = 0;
-
 #if defined(__aarch64__) || defined(_M_ARM64)
+            size_t j = 0;
             // ARM NEON Pipeline (Processes 16 elements = 128 output bytes per loop)
             for (; j + 15 < nElements; j += 16)
             {
@@ -709,9 +729,11 @@ bool NisarRasterBand::ProcessAndCopyChunk(const GByte *pSrcData,
 
                 dst += 128;
             }
+#else
+            size_t j = 0;
 #endif
             // Highly unrolled sequential write loop
-            for (size_t j = 0; j < nElements; ++j)
+            for (; j < nElements; ++j)
             {
                 dst[0] = src0[j];
                 dst[1] = src1[j];
@@ -825,7 +847,7 @@ GDALRasterBand *NisarRasterBand::GetMaskBand()
         return m_poMaskBand;
 
     //  Cast the dataset
-    NisarDataset *poNisarDS = (NisarDataset *)poDS;
+    NisarDataset *poNisarDS = static_cast<NisarDataset *>(poDS);
     if (!poNisarDS)
         return GDALPamRasterBand::GetMaskBand();
 
@@ -1071,11 +1093,11 @@ CPLErr NisarRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, void *pImage)
             // Thread-safe storage container to house intermediate states
             struct DecompressedChunk
             {
-                int nBlockX;
-                int nBlockY;
-                std::vector<GByte> osData;
-                bool bIsTarget;
-                bool bIsMissing;
+                int nBlockX = 0;
+                int nBlockY = 0;
+                std::vector<GByte> osData{};
+                bool bIsTarget = false;
+                bool bIsMissing = false;
                 bool bValid = false;
             };
 
@@ -1116,9 +1138,21 @@ CPLErr NisarRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, void *pImage)
                                                   chunk.nBlockY == nBlockYOff);
 
                             // Allocate dedicated memory array isolated inside this specific worker thread
-                            outChunk.osData.resize(nExpectedBytes);
+                            bool bAllocOK = true;
+                            try
+                            {
+                                outChunk.osData.resize(nExpectedBytes);
+                            }
+                            catch (const std::bad_alloc &)
+                            {
+                                bAllocOK = false;
+                            }
 
-                            if (chunk.bIsMissing)
+                            if (!bAllocOK)
+                            {
+                                bSuccess = false;
+                            }
+                            else if (chunk.bIsMissing)
                             {
                                 memset(outChunk.osData.data(), 0,
                                        nExpectedBytes);

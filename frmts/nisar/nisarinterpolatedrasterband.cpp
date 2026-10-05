@@ -298,8 +298,8 @@ namespace
 struct DEMWindow
 {
     int nX0 = 0, nY0 = 0, nXSize = 0, nYSize = 0;
-    std::vector<float> data;
-    std::vector<GByte> mask;  // empty when the DEM has no mask band to honour
+    std::vector<float> data{};
+    std::vector<GByte> mask{};  // empty when the DEM has no mask band to honour
 };
 }  // namespace
 

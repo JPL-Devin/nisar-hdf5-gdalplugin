@@ -55,6 +55,7 @@ struct NisarCubeXY
 class NisarInterpolatedDataset final : public GDALDataset
 {
     friend class NisarInterpolatedRasterBand;
+    CPL_DISALLOW_COPY_ASSIGN(NisarInterpolatedDataset)
 
   private:
     GDALDataset *m_poRawDEM = nullptr;
@@ -64,8 +65,8 @@ class NisarInterpolatedDataset final : public GDALDataset
         nullptr;  // L1 warp source: VRT [height, validity]
 
     // Coarse 3D Cube Data
-    std::vector<float> m_cubeData;
-    std::vector<double> m_zVect;  // heightAboveEllipsoid 1D array
+    std::vector<float> m_cubeData{};
+    std::vector<double> m_zVect{};  // heightAboveEllipsoid 1D array
 
     int m_nCubeXSize = 0;
     int m_nCubeYSize = 0;
@@ -74,20 +75,20 @@ class NisarInterpolatedDataset final : public GDALDataset
 
     // Target High-Res Grid Info
     double m_adfTargetGeoTransform[6] = {0, 1, 0, 0, 0, 1};
-    OGRSpatialReference m_oSRS;
+    OGRSpatialReference m_oSRS{};
 
     // Add the cached inverse transform
     double m_adfCubeInvGeoTransform[6] = {0, 1, 0, 0, 0, 1};
 
     // ---- Level-1 (radar coordinates) ----
     bool m_bRadarGrid = false;
-    std::vector<double> m_swathRange;  // slantRange per output column
+    std::vector<double> m_swathRange{};  // slantRange per output column
     std::vector<double>
-        m_swathTime;  // zeroDopplerTime per output line (cube epoch)
-    std::vector<double> m_cubeRange;  // geolocationGrid/slantRange
-    std::vector<double> m_cubeTime;   // geolocationGrid/zeroDopplerTime
-    std::vector<double> m_coordX;     // geolocationGrid/coordinateX (z, y, x)
-    std::vector<double> m_coordY;     // geolocationGrid/coordinateY (z, y, x)
+        m_swathTime{};  // zeroDopplerTime per output line (cube epoch)
+    std::vector<double> m_cubeRange{};  // geolocationGrid/slantRange
+    std::vector<double> m_cubeTime{};   // geolocationGrid/zeroDopplerTime
+    std::vector<double> m_coordX{};     // geolocationGrid/coordinateX (z, y, x)
+    std::vector<double> m_coordY{};     // geolocationGrid/coordinateY (z, y, x)
     double m_adfDEMGeoTransform[6] = {0, 1, 0, 0, 0, 1};
     double m_adfDEMInvGeoTransform[6] = {0, 1, 0, 0, 0, 1};
     bool m_bDEMHasNoData = false;
@@ -100,7 +101,7 @@ class NisarInterpolatedDataset final : public GDALDataset
 
     int m_nGCPCount = 0;
     GDAL_GCP *m_pasGCPs = nullptr;
-    OGRSpatialReference m_oGCPSRS;
+    OGRSpatialReference m_oGCPSRS{};
 
     bool InitRadarGrid(NisarDataset *poCube, NisarDataset *poSwath,
                        const std::string &sCubeGroup,

@@ -816,7 +816,22 @@ GDALDataset *NisarInterpolatedDataset::Open(GDALOpenInfo *poOpenInfo)
     // Read the entire 3D cube into a flat 1D std::vector
     const size_t nTotalCubePixels = static_cast<size_t>(poDS->m_nCubeXSize) *
                                     poDS->m_nCubeYSize * poDS->m_nCubeZSize;
-    poDS->m_cubeData.resize(nTotalCubePixels);
+    try
+    {
+        poDS->m_cubeData.resize(nTotalCubePixels);
+    }
+    catch (const std::bad_alloc &)
+    {
+        CPLError(CE_Failure, CPLE_OutOfMemory,
+                 "Cannot allocate %llu values for the metadata cube",
+                 static_cast<unsigned long long>(nTotalCubePixels));
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "Failed to read coarse cube data via RasterIO.");
+        delete poDS;
+        GDALClose(poCoarseCubeDS);
+        GDALClose(poTargetGridDS);
+        return nullptr;
+    }
 
     for (int z = 0; z < poDS->m_nCubeZSize; ++z)
     {
@@ -840,9 +855,9 @@ GDALDataset *NisarInterpolatedDataset::Open(GDALOpenInfo *poOpenInfo)
 
     // Open the DEM
     CPLDebug("NISAR_DRIVER", "Interpolation: Opening DEM %s", pszDemFile);
-    poDS->m_poRawDEM =
-        (GDALDataset *)GDALOpenEx(pszDemFile, GDAL_OF_RASTER | GDAL_OF_READONLY,
-                                  nullptr, nullptr, nullptr);
+    poDS->m_poRawDEM = GDALDataset::FromHandle(
+        GDALOpenEx(pszDemFile, GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr,
+                   nullptr, nullptr));
     if (!poDS->m_poRawDEM)
     {
         CPLError(CE_Failure, CPLE_OpenFailed, "Failed to open DEM file: %s",

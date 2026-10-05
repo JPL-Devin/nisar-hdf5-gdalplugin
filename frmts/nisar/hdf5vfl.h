@@ -38,8 +38,8 @@
 // to use the VFL for /vsi file system support.
 
 // hdf5vfl.h
-#ifndef HDF5VFL_H_INCLUDED_
-#define HDF5VFL_H_INCLUDED_
+#ifndef NISAR_HDF5VFL_H_INCLUDED_
+#define NISAR_HDF5VFL_H_INCLUDED_
 
 #include "cpl_port.h"
 #include <hdf5.h>
@@ -56,4 +56,4 @@ hid_t HDF5VFLGetFileDriver();
 void HDF5VFLUnloadFileDriver();
 }  // namespace NisarVFL
 
-#endif /* HDF5VFL_H_INCLUDED_ */
+#endif /* NISAR_HDF5VFL_H_INCLUDED_ */

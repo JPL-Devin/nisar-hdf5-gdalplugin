@@ -111,6 +111,7 @@ using GDALGeoTransform = std::array<double, 6>;
 class NisarDataset final : public GDALPamDataset
 {
     friend class NisarRasterBand;
+    CPL_DISALLOW_COPY_ASSIGN(NisarDataset)
 
     // Core HDF5 Handles & Info (Declare first)
     hid_t hHDF5 = -1;
@@ -125,8 +126,8 @@ class NisarDataset final : public GDALPamDataset
     mutable bool m_bGotMetadata = false;  // Flag for default domain HDF5 read
     // GeoTransform Caching
     mutable bool m_bGotGeoTransform = false;
-    mutable double m_adfGeoTransform[6];
-    mutable std::mutex m_GeoTransformMutex;
+    mutable double m_adfGeoTransform[6] = {0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    mutable std::mutex m_GeoTransformMutex{};
     //
     // Cached Objects / Data (Declare together)
     mutable OGRSpatialReference *m_poSRS = nullptr;  // Cached SRS object
@@ -137,34 +138,34 @@ class NisarDataset final : public GDALPamDataset
     mutable char **m_papszDumpMetadata = nullptr;
 
     // Mutexes (Declare together, last among cached members)
-    mutable std::mutex m_SRSMutex;
-    mutable std::mutex m_GlobalMetadataMutex;
-    mutable std::mutex m_MetadataMutex;
-    mutable std::mutex m_DumpMetadataMutex;
+    mutable std::mutex m_SRSMutex{};
+    mutable std::mutex m_GlobalMetadataMutex{};
+    mutable std::mutex m_MetadataMutex{};
+    mutable std::mutex m_DumpMetadataMutex{};
 
     // Product identification
-    std::string m_sProductType;  // e.g., "GSLC", "RSLC"
+    std::string m_sProductType{};  // e.g., "GSLC", "RSLC"
     bool m_bIsLevel1 = false;
     bool m_bIsLevel2 = false;
     bool m_bIsLevel3 = false;
 
     // Open options used
-    std::string m_sInst;          // LSAR or SSAR
-    std::string m_sFreq;          // A or B
-    std::string m_sPol;           // HH, HV, etc.
+    std::string m_sInst{};        // LSAR or SSAR
+    std::string m_sFreq{};        // A or B
+    std::string m_sPol{};         // HH, HV, etc.
     bool m_bMaskEnabled = false;  //Default to NO
     bool m_bDumpEnabled = false;  // DUMP=YES
-    std::string m_sDumpRoot;      // DUMP_ROOT (HDF5 group path)
+    std::string m_sDumpRoot{};    // DUMP_ROOT (HDF5 group path)
     bool m_bDumpFull = false;     // DUMP_MODE=FULL
 
   private:  // Keep static helpers private if only used internally
     struct MetadataCategory
     {
-        std::string sHDF5Path;
-        std::string sGDALDomain;
+        std::string sHDF5Path{};
+        std::string sGDALDomain{};
     };
 
-    std::map<std::string, MetadataCategory> m_oMetadataMap;
+    std::map<std::string, MetadataCategory> m_oMetadataMap{};
 
     void InitializeMetadataMap();
     void LoadMetadataDomain(const std::string &sKeyword);

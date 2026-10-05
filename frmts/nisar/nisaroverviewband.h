@@ -29,6 +29,7 @@ class NisarOverviewBand final : public GDALRasterBand
 {
     GDALRasterBand *m_poBaseBand;
     int m_nDecimationFactor;
+    CPL_DISALLOW_COPY_ASSIGN(NisarOverviewBand)
 
   public:
     NisarOverviewBand(GDALRasterBand *poBaseBand, int nDecimationFactor)
@@ -105,7 +106,8 @@ class NisarOverviewBand final : public GDALRasterBand
 
         CPLDebug("NISAR_OVERVIEW",
                  "Buffer Strides | PixelSpace=%lld, LineSpace=%lld",
-                 (long long)nPixelSpace, (long long)nLineSpace);
+                 static_cast<long long>(nPixelSpace),
+                 static_cast<long long>(nLineSpace));
 
         // 4. THE BYPASS GUARD (Prevents Infinite Recursion)
         struct OverviewBypassGuard
