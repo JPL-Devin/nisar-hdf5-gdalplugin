@@ -1,3 +1,7 @@
+// Copyright 2025 California Institute of Technology
+// U.S. Government sponsorship acknowledged.
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef NISAR_INTERPOLATED_RASTERBAND_H
 #define NISAR_INTERPOLATED_RASTERBAND_H
 
@@ -14,14 +18,14 @@ class NisarInterpolatedRasterBand final : public GDALRasterBand
 {
     friend class NisarInterpolatedDataset;
 
-public:
-    NisarInterpolatedRasterBand(NisarInterpolatedDataset* poDSIn, int nBandIn);
+  public:
+    NisarInterpolatedRasterBand(NisarInterpolatedDataset *poDSIn, int nBandIn);
     ~NisarInterpolatedRasterBand() override = default;
 
-    CPLErr IReadBlock(int nBlockXOff, int nBlockYOff, void* pImage) override;
+    CPLErr IReadBlock(int nBlockXOff, int nBlockYOff, void *pImage) override;
 
-private:
-    CPLErr ReadRadarBlock(int nBlockXOff, int nBlockYOff, float* pafOutput);
+  private:
+    CPLErr ReadRadarBlock(int nBlockXOff, int nBlockYOff, float *pafOutput);
 };
 
-#endif // NISAR_INTERPOLATED_RASTERBAND_H
+#endif  // NISAR_INTERPOLATED_RASTERBAND_H

@@ -335,7 +335,7 @@ Jupyter kernels do not inherit a terminal's exports — set `AWS_PROFILE` before
 kernel, or `gdal.SetConfigOption(...)`/`os.environ[...]` in the first cell. Partial credential
 sets (e.g. a stale `AWS_SESSION_TOKEN`) break signing; `unset` them before switching profiles.
 
-The driver sets `GDAL_HTTP_MAX_RETRY=5` if you have not set it. `conda-build/tests/verify_hdf5_ros3.py`
+Set `GDAL_HTTP_MAX_RETRY=5` for long remote reads; the driver leaves it at the GDAL default. `conda-build/tests/verify_hdf5_ros3.py`
 is an h5py/ROS3 diagnostic for the *HDF5 library's* own S3 path and is unrelated to how this driver
 reads remote files.
 
@@ -348,7 +348,7 @@ reads remote files.
 | `NISAR_MAX_VIRTUAL_OVR` | `16` | Largest virtual overview decimation factor. |
 | `NISAR_EXPORT_ZARR` | `NO` | Write a kerchunk-style virtual Zarr sidecar JSON to `/tmp/nisar_kerchunk<dataset>.json` on first chunk map. Debug/interop only. |
 | `GDAL_NUM_THREADS` | GDAL default | Parallel chunk decompression. `ALL_CPUS` is reasonable. |
-| `GDAL_HTTP_MAX_RETRY` | `5` (set by driver) | Retries on transient HTTP errors. |
+| `GDAL_HTTP_MAX_RETRY` | GDAL default | Retries on transient HTTP errors; `5` is a good value for S3. |
 | `GDAL_CACHEMAX` | GDAL default | GDAL block cache; raise for large translations. |
 | `GDAL_DISABLE_READDIR_ON_OPEN` | — | `EMPTY_DIR` avoids listing the S3 prefix on open. |
 | `GDAL_PAM_ENABLED` | — | `NO` stops `.aux.xml` sidecars next to local granules. |
@@ -391,7 +391,7 @@ Gotchas:
 - `GLIBC_2.38 not found` means the Linux binary is newer than the host libc (older JupyterHub
   images) — needs a rebuild, not configuration.
 - Building from source: see `BUILDING.md`; the plugin is a CMake project in
-  `conda-build/nisar-gdal-recipe/` installed into `$PREFIX/lib/gdalplugins`. Set
+  `frmts/nisar/` installed into `$PREFIX/lib/gdalplugins`. Set
   `GDAL_DRIVER_PATH` if GDAL cannot find it.
 
 ## Checklist before trusting output quantitatively

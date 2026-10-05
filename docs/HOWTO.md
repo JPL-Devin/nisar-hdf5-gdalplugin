@@ -115,7 +115,7 @@ mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.2
 
 The package also installs this guide, the repository `README.md`, the `nisar-gdal` skill document and `AGENT_GUIDE.md` (a one-page map of the driver and its documents for AI agents) to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` for offline reference.
 
-Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `conda-build/nisar-gdal-recipe/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
+Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `frmts/nisar/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
 
 ## 2.2 The stale-version trap
 
@@ -890,7 +890,7 @@ Four facts explain most of the performance behaviour you will observe:
 - **GDAL block size = HDF5 chunk size.** Every `IReadBlock` maps onto exactly one HDF5 chunk, so no chunk is read twice. Read windows aligned to the chunk grid are fastest. Chunk offsets are mapped lazily on first read.
 - **Mega-fetch.** When a block is missing from the cache, the driver reads a square grid of `NISAR_PREFETCH_GRID × NISAR_PREFETCH_GRID` neighbouring chunks in one contiguous range request (capped by `NISAR_MAX_MEGAFETCH_BYTES`), decompresses them in parallel (`GDAL_NUM_THREADS`) and pushes all of them into the GDAL block cache.
 - **Fixed HDF5 tuning.** Files are opened with a 4 MiB HDF5 page buffer, matching the 4 MiB paged-aggregation page NISAR granules are written with, and each dataset gets an 8 MiB / 521-slot chunk cache. Neither is configurable today.
-- **Retries.** `GDAL_HTTP_MAX_RETRY` is set to `5` by the driver if you have not set it, so transient S3 errors do not fail the read.
+- **Retries.** Set `GDAL_HTTP_MAX_RETRY` (e.g. `5`) so transient S3 errors do not fail the read; the driver does not change it.
 
 ## 11.2 Environment variables
 
@@ -904,7 +904,7 @@ These are GDAL configuration options: set them as environment variables, with `-
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar under `/tmp/` describing the HDF5 chunk map of the opened raster, for Zarr / xarray tooling. Debug and interoperability only. |
 | `GDAL_NUM_THREADS` | GDAL default | Threads used to decompress chunks in parallel. `ALL_CPUS` is reasonable. |
 | `GDAL_CACHEMAX` | GDAL default | GDAL block cache size in MB. Raise it (e.g. `2048`) when repeatedly reading large remote rasters. |
-| `GDAL_HTTP_MAX_RETRY` | `5` (set by driver) | Retries on failed HTTP range requests. |
+| `GDAL_HTTP_MAX_RETRY` | GDAL default | Retries on failed HTTP range requests; `5` is a good value for S3. |
 | `GDAL_DISABLE_READDIR_ON_OPEN` | — | `EMPTY_DIR` stops GDAL listing the containing S3 prefix on open, which is pure latency when you already know the exact key. |
 | `GDAL_PAM_ENABLED` | — | `NO` stops GDAL writing `.aux.xml` sidecars next to local granules, which is harmless but clutters directories and fails on read-only media. |
 

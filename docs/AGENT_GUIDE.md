@@ -18,8 +18,8 @@ linux-aarch64 (osx-arm64 is available for 0.7.0; newer macOS builds are made nat
 | What | Where |
 | ---- | ----- |
 | Conda package | channel `nisar-forge` on Anaconda.org: https://anaconda.org/nisar-forge/gdal-driver-nisar |
-| Source code and issues | https://github.com/ozzp/nisar-hdf5-gdalplugin |
-| Online HOWTO | https://github.com/ozzp/nisar-hdf5-gdalplugin/blob/main/docs/HOWTO.md |
+| Source code and issues | https://github.com/JPL-Devin/nisar-hdf5-gdalplugin |
+| Online HOWTO | https://github.com/JPL-Devin/nisar-hdf5-gdalplugin/blob/main/docs/HOWTO.md |
 
 Install into a fresh environment (recommended, avoids GDAL version conflicts):
 

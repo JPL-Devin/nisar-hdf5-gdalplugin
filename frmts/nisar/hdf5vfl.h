@@ -6,6 +6,8 @@
  *
  ******************************************************************************
  * Copyright (c) 2008-2018, Even Rouault <even.rouault at spatialys.com>
+ * Copyright 2025 California Institute of Technology (NISAR adaptation).
+ * U.S. Government sponsorship acknowledged.
  *
  * SPDX-License-Identifier: MIT
  ****************************************************************************/
@@ -25,11 +27,12 @@
 // CRITICAL: Namespace isolation for out-of-tree plugins.
 // Prevents symbol collision with GDAL's internal HDF5/NetCDF drivers.
 // --------------------------------------------------------------------------
-namespace NisarVFL {
-    // We only expose the two functions the rest of your plugin actually needs to see.
-    // All the heavy lifting (structs, static functions) stays hidden inside hdf5vfl.cpp
-    hid_t HDF5VFLGetFileDriver();
-    void HDF5VFLUnloadFileDriver();
-}
+namespace NisarVFL
+{
+// We only expose the two functions the rest of your plugin actually needs to see.
+// All the heavy lifting (structs, static functions) stays hidden inside hdf5vfl.cpp
+hid_t HDF5VFLGetFileDriver();
+void HDF5VFLUnloadFileDriver();
+}  // namespace NisarVFL
 
 #endif /* HDF5VFL_H_INCLUDED_ */

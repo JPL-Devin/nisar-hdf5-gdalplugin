@@ -191,7 +191,7 @@ These are GDAL *configuration options*: set them as environment variables, with
 | `NISAR_DUMP_MAX_STRING_CHARS` | `2048` | Longest string value (in UTF-8 code points; never split mid-character) printed in the `NISAR_DUMP` domain before truncation with `...`. Also bounds how much of a string *dataset* is read: fixed-length strings are read through a memory type of this size (×4 bytes for UTF-8), and a variable-length string array whose payload exceeds `elements × (4 × cap + 1)` bytes is not read at all (`(variable-length string, N bytes, not printed)`). Variable-length string *attributes* and *scalar* variable-length string datasets are read whole. |
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar (`/tmp/nisar_kerchunk_<dataset>.json`) describing the HDF5 chunk map of the opened raster, for use with Zarr / xarray tooling. |
 | `GDAL_NUM_THREADS` | number of CPUs | Number of threads used to decompress chunks in parallel. `ALL_CPUS` or unset uses every hardware thread. |
-| `GDAL_HTTP_MAX_RETRY` | `5` (set by the driver if unset) | Number of retries GDAL performs on failed HTTP range requests. |
+| `GDAL_HTTP_MAX_RETRY` | GDAL default | Number of retries GDAL performs on failed HTTP range requests. Setting it (e.g. `5`) makes long remote reads robust to transient S3 errors. |
 | `GDAL_CACHEMAX` | GDAL default | Size of GDAL's block cache. Increasing it (e.g. `2048` MB) helps when repeatedly reading large remote rasters. |
 | `GDAL_DRIVER_PATH` | conda sets `$CONDA_PREFIX/lib/gdalplugins` | Directory GDAL scans for plugins. Only needs to be set if the driver is installed in a non-standard location. |
 
@@ -489,7 +489,7 @@ print("\n".join(dump.GetMetadata_List("NISAR_DUMP")))
 - **Block size = HDF5 chunk size.** Every `IReadBlock` maps exactly onto one HDF5 chunk, so no chunk is read twice. Read windows aligned to the chunk grid are fastest.
 - **Mega-fetch.** When a block is missing from the cache, the driver reads a rectangular grid of `NISAR_PREFETCH_GRID × NISAR_PREFETCH_GRID` chunks in one contiguous range request (capped by `NISAR_MAX_MEGAFETCH_BYTES`), decompresses them in parallel (`GDAL_NUM_THREADS`) and pushes all of them into the GDAL block cache. Keep the default `1` for interactive / tiled access; raise it (e.g. `24`) for full-scene batch jobs.
 - **HDF5 page buffer.** Files are opened with a 4 MiB HDF5 page buffer so metadata reads on remote files are served from a few large requests.
-- **HTTP retries.** `GDAL_HTTP_MAX_RETRY` is defaulted to `5` so transient S3 errors do not fail the read.
+- **HTTP retries.** Set `GDAL_HTTP_MAX_RETRY` (e.g. `5`) so transient S3 errors do not fail the read; the driver does not change it.
 - **Virtual overviews.** Overview levels are computed by decimating the full-resolution chunks; the cost is proportional to the number of chunks touched, so limit `NISAR_MAX_VIRTUAL_OVR` on very large products if zoomed-out views are slow.
 - **zlib-ng.** The conda package is built against `zlib-ng`, which decompresses DEFLATE chunks significantly faster than stock `zlib`.
 
@@ -534,7 +534,7 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 ├── aws_env.sh, aws_creds.sh       Helpers that print AWS credentials from a profile as export statements
 ├── LICENSE                        Apache-2.0
 └── conda-build/
-    ├── nisar-gdal-recipe/         Conda recipe **and** the C++ sources
+    ├── nisar-gdal-recipe/         Conda recipe (builds from ../../frmts/nisar)
     │   ├── meta.yaml              Package metadata, dependencies, version
     │   ├── conda_build_config.yaml  GDAL / compiler pins
     │   ├── build.sh               CMake configure + build + install into $PREFIX/lib/gdalplugins
@@ -557,8 +557,8 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 - **`NisarRasterBand`** (`GDALRasterBand` subclass) reports the HDF5 chunk size as the GDAL block size, maps chunk offsets with `H5Dchunk_iter`, and implements `IReadBlock` as a coalesced "mega-fetch" of neighbouring chunks that are decompressed in parallel. It also creates virtual overview bands, exposes derived subdatasets for complex data, attaches `NisarHDF5MaskBand` when `MASK=YES`, and can emit a Kerchunk sidecar.
 - **`NisarInterpolatedDataset`** wraps a coarse 3-D `radarGrid` cube and a DEM and produces a full-resolution interpolated raster when `QUANTITY` + `DEM_FILE` are given.
 
-The C++ sources are located in `conda-build/nisar-gdal-recipe/` (the conda recipe uses
-`source: path: .`), not in a top-level `src/` directory.
+The C++ sources are located in `frmts/nisar/` (the conda recipe uses
+`source: path: ../../frmts/nisar`), laid out like a GDAL in-tree driver.
 
 ## Data and Specifications
 
