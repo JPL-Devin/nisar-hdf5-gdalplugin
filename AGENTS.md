@@ -125,12 +125,13 @@ Match the surrounding style instead of reformatting:
   CPLE_*, …)` for user-facing errors, `CPLDebug("NISAR_DRIVER", …)` for diagnostics
   (other categories in use: `NISAR_NET_PERF`, `NISAR_MASK_PERF`, `NISAR_INTERP_PERF`,
   `NISAR_OVERVIEW`, `NISAR_VISITOR`).
-- Every C++ source file starts with the three-line SPDX header (`Copyright 2025 California
-  Institute of Technology` / `U.S. Government sponsorship acknowledged.` /
-  `SPDX-License-Identifier: Apache-2.0`); copy it into new files verbatim. `hdf5vfl.{h,cpp}`
-  additionally keep the MIT notice of the GDAL code they derive from. The former
-  export-control header must not be reintroduced (see `UPSTREAM_CHECKLIST.md` for the pending
-  legal sign-off).
+- Every C++ source file starts with the Caltech license block used in `frmts/nisar/nisar.cpp`
+  (`Copyright 2025, California Institute of Technology. All rights reserved. U.S. Government
+  sponsorship acknowledged.`, the full Apache-2.0 notice and `SPDX-License-Identifier:
+  Apache-2.0`, in the style of GDAL's `frmts/mrf` Caltech header); copy it into new files
+  verbatim. `hdf5vfl.{h,cpp}` additionally keep the MIT notice of the GDAL code they derive
+  from. The former export-control / commercial-negotiation header must not be reintroduced
+  (see `UPSTREAM_CHECKLIST.md` for the pending legal sign-off).
 - Python test code follows plain PEP 8 (numpy + `osgeo.gdal`, `gdal.UseExceptions()`) and starts
   with the short Caltech copyright + `SPDX-License-Identifier: Apache-2.0` comment block used in
   `conda-build/tests/test_dump.py`.

@@ -29,11 +29,14 @@ a human must be the primary author, responsible for every line.
 
 ## 2. JPL legal sign-off on licensing
 
-- [ ] SPDX header choice. All NISAR-authored C++ sources now carry
-      `Copyright 2025 California Institute of Technology` / `U.S. Government sponsorship acknowledged.` /
-      `SPDX-License-Identifier: Apache-2.0`, replacing the former "ALL RIGHTS RESERVED" /
-      export-control / commercial-negotiation notice. Confirm JPL legal and the software release
-      process (open-source release approval, export-control review) cover this.
+- [ ] License header choice. All NISAR-authored C++ sources now carry a full Caltech notice
+      modeled on GDAL's `frmts/mrf` precedent: `Copyright 2025, California Institute of
+      Technology. All rights reserved. U.S. Government sponsorship acknowledged.` followed by the
+      Apache-2.0 license text and `SPDX-License-Identifier: Apache-2.0`. This replaces the former
+      "ALL RIGHTS RESERVED" / export-control / commercial-negotiation notice, which granted no
+      redistribution rights and conflicted with the repo's Apache-2.0 `LICENSE`. Confirm JPL legal
+      and the software release process (open-source release approval, export-control review)
+      cover this. If upstreamed, add the block to GDAL's `LICENSE.TXT` like `frmts/mrf/*`.
 - [ ] `hdf5vfl.{h,cpp}` derive from GDAL's MIT-licensed `frmts/hdf5/hdf5vfl.h`. They keep the
       original MIT notice (Denis Nadeau, Sam Gillingham, Even Rouault) and `SPDX-License-Identifier: MIT`,
       with a Caltech line for the modifications. Confirm this is acceptable.
