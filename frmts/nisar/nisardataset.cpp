@@ -1723,20 +1723,25 @@ char **NisarDataset::GetMetadataDomainList()
 {
     CPLDebug("NISAR_DRIVER", "GetMetadataDomainList called");
     char **papszDomains = GDALPamDataset::GetMetadataDomainList();
-    papszDomains =
-        CSLAddString(papszDomains, "NISAR_GLOBAL");  // Add our global domain
-    // Add SUBDATASETS if populated by Open
+    // The base class may already list some of these (e.g. SUBDATASETS when
+    // set through SetMetadata()), so only add what is missing.
+    const auto AddDomain = [&papszDomains](const char *pszDomain)
+    {
+        if (CSLFindString(papszDomains, pszDomain) < 0)
+            papszDomains = CSLAddString(papszDomains, pszDomain);
+    };
+    AddDomain("NISAR_GLOBAL");
     if (papszSubDatasets != nullptr)
-        papszDomains = CSLAddString(papszDomains, "SUBDATASETS");
+        AddDomain("SUBDATASETS");
     if (m_bDumpEnabled)
-        papszDomains = CSLAddString(papszDomains, "NISAR_DUMP");
+        AddDomain("NISAR_DUMP");
 
     // Add DERIVED_SUBDATASETS if this is a raster dataset (not container)
     // and the type is numeric.
     // hDataset is > 0 for a specific raster, eDataType is set in Open()
     if (hDataset >= 0 && (eDataType > GDT_Unknown && eDataType < GDT_CInt16))
     {
-        papszDomains = CSLAddString(papszDomains, "DERIVED_SUBDATASETS");
+        AddDomain("DERIVED_SUBDATASETS");
     }
 
     return papszDomains;

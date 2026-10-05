@@ -8,7 +8,11 @@ based on OSGeo/gdal `master`, 3.14.0dev) has been prepared and validated:
   `NISAR` in `frmts/drivers.ini`, `GDALRegister_NISAR()` in `gcore/gdal_frmts.h` and
   `frmts/gdalallregister.cpp` (registered before HDF5)
 - `doc/source/drivers/raster/nisar.rst` + entry in `doc/source/drivers/raster/index.rst`
-- `autotest/gdrivers/nisar.py` (synthetic fixture generated with h5py at test time)
+- `autotest/gdrivers/nisar.py` + `autotest/gdrivers/data/nisar/NISAR_L2_GCOV_synthetic.h5` (19 KB
+  static fixture, generation recipe in the test header; no h5py/numpy needed at test time).
+  Follows GDAL's automated-testing guidance: `pytestmark = require_driver("NISAR")`,
+  `gdaltest.GDALTest` checksum/geotransform/SRS test, `@pytest.mark.parametrize`, independent
+  test cases, file-handle leak fixture (as in `hdf5.py`), negative Identify/Open cases
 - verified: `-DGDAL_ENABLE_DRIVER_NISAR=ON` (builtin) and `-DGDAL_ENABLE_DRIVER_NISAR_PLUGIN=ON`
   (`gdalplugins/gdal_NISAR.so`) both build, and `autotest/gdrivers/nisar.py` passes in both modes
   and against the standalone plugin on GDAL 3.12
@@ -62,11 +66,13 @@ a human must be the primary author, responsible for every line.
 
 ## 4. Test data hosting
 
-- [ ] The autotest currently builds a tiny GCOV-like fixture with h5py at run time and is
-      skipped if h5py is missing. GDAL CI may not install h5py. Options: commit small `.h5`
-      fixtures under `autotest/gdrivers/data/nisar/` with a `generate_test.py` (the
-      `data/s102`, `data/bag` pattern), and/or host real subsetted granules in
-      [OSGeo/gdal-test-datasets](https://github.com/OSGeo/gdal-test-datasets) for slow tests.
+- [x] GDAL CI does not install h5py, so the autotest now ships a 19 KB static fixture
+      (`autotest/gdrivers/data/nisar/NISAR_L2_GCOV_synthetic.h5`, h5py recipe in the test
+      header) instead of generating it at run time.
+- [ ] Real subsetted granules (L1 GCPs, complex, masks, metadata cubes) are too large for the
+      GDAL tree; host them in
+      [OSGeo/gdal-test-datasets](https://github.com/OSGeo/gdal-test-datasets) and mark those
+      tests `@pytest.mark.require_run_on_demand` / `slow`.
 - [ ] Add L1 (RSLC/GCP), complex (GSLC derived subdatasets), mask, metadata-cube
       (QUANTITY/DEM_FILE) and `/vsicurl/` coverage. Confirm redistribution rights for any
       real NISAR data used.
