@@ -1744,7 +1744,7 @@ NisarMetadataList NisarDataset::GetMetadata(const char *pszDomain)
                  m_bGotGlobalMetadata);
         if (m_bGotGlobalMetadata)
         {
-            return CSLDuplicate(m_papszGlobalMetadata);  // Return copy
+            return m_papszGlobalMetadata;
         }
         m_bGotGlobalMetadata = true;
         CSLDestroy(m_papszGlobalMetadata);
@@ -1771,13 +1771,13 @@ NisarMetadataList NisarDataset::GetMetadata(const char *pszDomain)
         CPLDebug("NISAR_DRIVER",
                  "Finished reading for NISAR_GLOBAL. Found %d items.",
                  CSLCount(m_papszGlobalMetadata));
-        return CSLDuplicate(m_papszGlobalMetadata);  // Return copy
+        return m_papszGlobalMetadata;
     }
 
     // Handle SUBDATASETS Domain
     if (pszDomain != nullptr && EQUAL(pszDomain, "SUBDATASETS"))
     {
-        return CSLDuplicate(papszSubDatasets);  // Return copy
+        return papszSubDatasets;
     }
 
     // Handle NISAR_DUMP Domain (h5dump-style listing, lazily built)

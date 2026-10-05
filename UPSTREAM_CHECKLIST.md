@@ -82,8 +82,6 @@ These are not blocking for the standalone plugin, but GDAL reviewers will likely
 - [ ] Compiler warnings under GDAL's flags: about 130 (`-Weffc++`, `-Wold-style-cast`,
       `-Wreorder`, `-Wshadow`, unused functions/variables). GDAL CI builds with `-Werror`.
       Remove the `#pragma message` in `nisardataset.h`.
-- [ ] `NisarDataset::GetMetadata()` returns `CSLDuplicate(...)` copies for `NISAR_GLOBAL` and
-      `SUBDATASETS`. GDAL callers do not free the result, so these leak. Return owned members.
 - [ ] Deferred plugin loading: GDAL's HDF5 driver splits `Identify()` into
       `hdf5drivercore.cpp` (`CORE_SOURCES`, `NO_SHARED_SYMBOL_WITH_CORE`) so a plugin is only
       loaded when needed. `NisarDataset::Identify()` calls `H5Fopen`, so it cannot be moved into
