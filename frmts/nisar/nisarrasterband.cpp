@@ -184,11 +184,11 @@ NisarRasterBand::NisarRasterBand(NisarDataset *poDSIn, int nBandIn)
         CPLError(CE_Failure, CPLE_AppDefined,
                  "NisarRasterBand: Dataset rank is %d, but must be >= 2.",
                  rank);
-        // Set handles to invalid so IReadBlock will fail
         if (m_hFileSpaceID >= 0)
             H5Sclose(m_hFileSpaceID);
         m_hFileSpaceID = -1;
         m_hMemSpaceID = -1;
+        m_bValid = false;
         return;
     }
 
@@ -232,6 +232,7 @@ NisarRasterBand::NisarRasterBand(NisarDataset *poDSIn, int nBandIn)
         CPLError(CE_Failure, CPLE_OutOfMemory,
                  "Cannot allocate chunk map for %d x %d chunks", nChunksPerRow,
                  nChunksPerCol);
+        m_bValid = false;
         return;
     }
 
@@ -920,6 +921,15 @@ GDALRasterBand *NisarRasterBand::GetMaskBand()
 /***************************************************************************/
 CPLErr NisarRasterBand::IReadBlock(int nBlockXOff, int nBlockYOff, void *pImage)
 {
+    if (!m_bValid)
+    {
+        CPLError(
+            CE_Failure, CPLE_AppDefined,
+            "NISAR: band %d was not initialised; cannot read block (%d, %d)",
+            nBand, nBlockXOff, nBlockYOff);
+        return CE_Failure;
+    }
+
     // Ensure chunks are mapped before we calculate fetches!
     if (!m_bChunksMapped)
     {

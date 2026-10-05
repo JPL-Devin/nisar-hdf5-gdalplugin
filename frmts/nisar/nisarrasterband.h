@@ -54,6 +54,7 @@ class NisarRasterBand final : public GDALPamRasterBand
 
   private:
     bool m_bChunksMapped = false;
+    bool m_bValid = true;
     std::mutex m_oChunkMapMutex{};
     void MapChunks();
     std::mutex m_oMutex{};  // Protects shared VSI file pointers
@@ -93,6 +94,13 @@ class NisarRasterBand final : public GDALPamRasterBand
     std::string GetStandardDatasetURI() const;
 
   public:
+    /** False when the constructor could not initialise the band (bad rank,
+     *  chunk-map allocation failure); Open() must not install such a band. */
+    bool IsValid() const
+    {
+        return m_bValid;
+    }
+
     NisarRasterBand(NisarDataset *poDSIn, int nBandIn, hid_t hDatasetID,
                     hid_t hH5DatasetType);
     NisarRasterBand(NisarDataset *poDS, int nBand);

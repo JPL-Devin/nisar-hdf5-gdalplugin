@@ -3426,7 +3426,8 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     const char *pszPrefix = "NISAR:";
     size_t nPrefixLen = strlen(pszPrefix);
 
-    if (EQUALN(pszFullInput, pszPrefix, nPrefixLen))
+    const bool bHasPrefix = EQUALN(pszFullInput, pszPrefix, nPrefixLen);
+    if (bHasPrefix)
     {
         pszDataIdentifier = pszFullInput + nPrefixLen;
     }
@@ -3470,7 +3471,10 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         pszActualFilename[nActualLen - 2] = '\0';
     }
 
-    if (!EQUAL(NisarGetExtension(pszActualFilename).c_str(), "h5"))
+    // Mirror Identify(): an explicit NISAR: prefix claims the file whatever
+    // its extension; only unprefixed names are gated on .h5.
+    if (!bHasPrefix &&
+        !EQUAL(NisarGetExtension(pszActualFilename).c_str(), "h5"))
     {
         CPLFree(pszActualFilename);
         return nullptr;
@@ -4089,6 +4093,12 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     for (int i = 0; i < nBandsToCreate; i++)
     {
         NisarRasterBand *poBand = new NisarRasterBand(poDS, i + 1);
+        if (!poBand->IsValid())
+        {
+            delete poBand;
+            delete poDS;
+            return nullptr;
+        }
         poDS->SetBand(i + 1, poBand);
         if (bHasNoData)
             poBand->SetNoDataValue(dfNoData);
@@ -4143,7 +4153,14 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     if (poDS->nBands == 0)
     {
         poDS->nBands = 1;
-        poDS->SetBand(1, new NisarRasterBand(poDS, 1));
+        NisarRasterBand *poBand = new NisarRasterBand(poDS, 1);
+        if (!poBand->IsValid())
+        {
+            delete poBand;
+            delete poDS;
+            return nullptr;
+        }
+        poDS->SetBand(1, poBand);
     }
 
     //poDS->SetDescription(poOpenInfo->pszFilename);
