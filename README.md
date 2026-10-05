@@ -533,19 +533,22 @@ Enable driver debug output with `CPL_DEBUG=NISAR_DRIVER` (or `CPL_DEBUG=ON` for 
 ├── Dockerfile                     Multi-arch (x86_64 / arm64) AlmaLinux conda-build image
 ├── aws_env.sh, aws_creds.sh       Helpers that print AWS credentials from a profile as export statements
 ├── LICENSE                        Apache-2.0
+├── UPSTREAM_CHECKLIST.md          Remaining human items for upstreaming the driver into GDAL
+├── frmts/nisar/                   Driver sources (GDAL in-tree layout; single source of truth)
+│   ├── CMakeLists.txt             Standalone plugin build: gdal_NISAR module (GDAL, HDF5, zlib-ng)
+│   ├── CMakeLists.gdal.txt        In-tree GDAL build (add_gdal_driver); copy to <gdal>/frmts/nisar/CMakeLists.txt
+│   ├── nisar.cpp                  GDALRegister_NISAR(): driver metadata and open options
+│   ├── nisardataset.{h,cpp}       NisarDataset: identification, path parsing, subdatasets, georeferencing, metadata
+│   ├── nisarrasterband.{h,cpp}    NisarRasterBand: chunk-aligned reads, mega-fetch, overviews, masks, Zarr sidecar
+│   ├── nisaroverviewband.h        Virtual overview band
+│   ├── nisarinterpolated*.{h,cpp} NisarInterpolatedDataset: 3-D cube interpolation with a DEM
+│   ├── hdf5vfl.{h,cpp}            HDF5 Virtual File Layer driver that routes HDF5 I/O through GDAL VSI
+│   └── nisar_priv.h               Private helpers, mask types, HDF5 callbacks
 └── conda-build/
     ├── nisar-gdal-recipe/         Conda recipe (builds from ../../frmts/nisar)
     │   ├── meta.yaml              Package metadata, dependencies, version
     │   ├── conda_build_config.yaml  GDAL / compiler pins
-    │   ├── build.sh               CMake configure + build + install into $PREFIX/lib/gdalplugins
-    │   ├── CMakeLists.txt         Builds the gdal_NISAR module (GDAL, HDF5, zlib-ng)
-    │   ├── nisar.cpp              GDALRegister_NISAR(): driver metadata and open options
-    │   ├── nisardataset.{h,cpp}   NisarDataset: identification, path parsing, subdatasets, georeferencing, metadata
-    │   ├── nisarrasterband.{h,cpp}  NisarRasterBand: chunk-aligned reads, mega-fetch, overviews, masks, Zarr sidecar
-    │   ├── nisaroverviewband.h    Virtual overview band
-    │   ├── nisarinterpolated*.{h,cpp}  NisarInterpolatedDataset: 3-D cube interpolation with a DEM
-    │   ├── hdf5vfl.{h,cpp}        HDF5 Virtual File Layer driver that routes HDF5 I/O through GDAL VSI
-    │   └── nisar_priv.h           Private helpers, mask types, HDF5 callbacks
+    │   └── build.sh               CMake configure + build + install into $PREFIX/lib/gdalplugins
     └── tests/                     Test script, diagnostics and their documentation
 ```
 
