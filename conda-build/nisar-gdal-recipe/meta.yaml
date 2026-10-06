@@ -6,7 +6,7 @@ package:
   version: {{ version }}
 
 source:
-  path: .
+  path: ../../frmts/nisar
 
 build:
   number: 0
@@ -49,7 +49,7 @@ test:
     - test -f $PREFIX/share/doc/gdal-driver-nisar/AGENT_GUIDE.md
 
 about:
-  home: https://github.com/ozzp/nisar-hdf5-gdalplugin
+  home: https://github.com/JPL-Devin/nisar-hdf5-gdalplugin
   license: Apache-2.0
   license_file: ../../LICENSE
   summary: 'A GDAL plugin to read NISAR HDF5 files.'
@@ -60,8 +60,8 @@ about:
     validity masks, metadata-cube interpolation and an h5dump-style NISAR_DUMP domain.
     User documentation (README, HOWTO and the nisar-gdal skill) is installed to
     $CONDA_PREFIX/share/doc/gdal-driver-nisar/ and published at the doc_url below.
-  doc_url: https://github.com/ozzp/nisar-hdf5-gdalplugin/blob/main/docs/HOWTO.md
-  dev_url: https://github.com/ozzp/nisar-hdf5-gdalplugin
+  doc_url: https://github.com/JPL-Devin/nisar-hdf5-gdalplugin/blob/main/docs/HOWTO.md
+  dev_url: https://github.com/JPL-Devin/nisar-hdf5-gdalplugin
 
 extra:
   recipe-maintainers:

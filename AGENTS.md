@@ -10,11 +10,12 @@ NASA-ISRO SAR (NISAR) HDF5 products, written in C++17 and shipped as the conda p
 `gdal-driver-nisar` on the `nisar-forge` channel. There is no Python package: users drive
 it through the GDAL CLI or `osgeo.gdal`.
 
-The C++ sources live **inside the conda recipe** directory, not in `src/`:
+The C++ sources live in `frmts/nisar/` (same layout as a GDAL in-tree driver); the conda
+recipe builds from there:
 
 ```
-conda-build/nisar-gdal-recipe/
-  nisar.cpp                         GDALRegister_NISAR(): driver metadata, DRIVER_VERSION, open-option list
+frmts/nisar/
+  nisar.cpp                         GDALRegister_NISAR(): driver metadata, DRIVER_VERSION (standalone only), open-option list
   nisardataset.{h,cpp}              NisarDataset: connection-string parsing, product identification,
                                     subdatasets, L1 GCPs / L2-L3 GeoTransform+SRS, metadata domains
   nisarrasterband.{h,cpp}           NisarRasterBand: chunk-aligned IReadBlock, "mega-fetch", overviews,
@@ -23,7 +24,9 @@ conda-build/nisar-gdal-recipe/
   nisarinterpolated*.{h,cpp}        NisarInterpolatedDataset/RasterBand: 3-D metadata-cube + DEM interpolation
   hdf5vfl.{h,cpp}                   HDF5 Virtual File Layer driver routing all HDF5 I/O through GDAL VSI
   nisar_priv.h                      Private helpers, mask decoding, HDF5 iteration callbacks
-  CMakeLists.txt, build.sh, meta.yaml, conda_build_config.yaml   build + packaging
+  CMakeLists.txt                    Standalone plugin build (gdal_NISAR MODULE; defines NISAR_DRIVER_VERSION)
+  CMakeLists.gdal.txt               In-tree GDAL build (add_gdal_driver); copy to <gdal>/frmts/nisar/CMakeLists.txt
+conda-build/nisar-gdal-recipe/      build.sh, meta.yaml (source: path ../../frmts/nisar), conda_build_config.yaml
 conda-build/tests/                  pytest suite + shell/diagnostic scripts (see Testing)
 .agents/skills/nisar-gdal/SKILL.md  How to *use* the driver (connection strings, open options, gotchas)
 docs/AGENT_GUIDE.md                 One-page map: where the driver installs, which docs ship with it
@@ -54,7 +57,7 @@ export PATH="$HOME/nisar-env/bin:$PATH" GDAL_DRIVER_PATH="$HOME/build:$HOME/nisa
 Development build (fast, incremental; produces `~/build/gdal_NISAR.so`):
 
 ```bash
-cmake -S conda-build/nisar-gdal-recipe -B "$HOME/build" -DCMAKE_BUILD_TYPE=Release \
+cmake -S frmts/nisar -B "$HOME/build" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH="$HOME/nisar-env" -DCMAKE_INSTALL_PREFIX="$HOME/nisar-env"
 cmake --build "$HOME/build" -j$(nproc)
 gdalinfo --formats | grep NISAR      # must print:  NISAR -raster- (rovs): NISAR HDF5 (*.h5)
@@ -96,7 +99,7 @@ Notes:
 - `-p no:cacheprovider` keeps `.pytest_cache` out of the tree; also delete
   `conda-build/tests/__pycache__` before committing.
 - `test_driver_version` asserts the exact `DRIVER_VERSION` prefix — update it together with
-  `nisar.cpp` and `meta.yaml` when bumping the version.
+  `project(VERSION ...)` in `frmts/nisar/CMakeLists.txt` and `meta.yaml` when bumping the version.
 - `conda-build/tests/run_tests_NISAR_GSLC.sh` (end-to-end + benchmark against an S3 GSLC) and
   `verify_hdf5_ros3.py` (h5py/ROS3 diagnostic, unrelated to how this driver reads remote files)
   need AWS credentials and are not part of the routine loop.
@@ -122,8 +125,13 @@ Match the surrounding style instead of reformatting:
   CPLE_*, …)` for user-facing errors, `CPLDebug("NISAR_DRIVER", …)` for diagnostics
   (other categories in use: `NISAR_NET_PERF`, `NISAR_MASK_PERF`, `NISAR_INTERP_PERF`,
   `NISAR_OVERVIEW`, `NISAR_VISITOR`).
-- Every C++ source file starts with the Caltech copyright / export-control header; copy it into
-  new files verbatim.
+- Every C++ source file starts with the Caltech license block used in `frmts/nisar/nisar.cpp`
+  (`Copyright 2025, California Institute of Technology. All rights reserved. U.S. Government
+  sponsorship acknowledged.`, the full Apache-2.0 notice and `SPDX-License-Identifier:
+  Apache-2.0`, in the style of GDAL's `frmts/mrf` Caltech header); copy it into new files
+  verbatim. `hdf5vfl.{h,cpp}` additionally keep the MIT notice of the GDAL code they derive
+  from. The former export-control / commercial-negotiation header must not be reintroduced
+  (see `UPSTREAM_CHECKLIST.md` for the pending legal sign-off).
 - Python test code follows plain PEP 8 (numpy + `osgeo.gdal`, `gdal.UseExceptions()`) and starts
   with the short Caltech copyright + `SPDX-License-Identifier: Apache-2.0` comment block used in
   `conda-build/tests/test_dump.py`.
@@ -158,8 +166,8 @@ Match the surrounding style instead of reformatting:
 - **Mask semantics** live in `nisar_priv.h` / `nisarrasterband.cpp`: GUNW byte encodes
   reference/secondary sub-swath digits; all other products treat values 1–5 as valid.
   `MASK` defaults to `NO`.
-- **Version bump** = three places: `version`/`build number` in `meta.yaml`, `DRIVER_VERSION`
-  in `nisar.cpp`, and the assertion in `test_interpolation_earthaccess.py::test_driver_version`
+- **Version bump** = three places: `version`/`build number` in `meta.yaml`, `project(VERSION ...)`
+  in `frmts/nisar/CMakeLists.txt` (becomes `DRIVER_VERSION`), and the assertion in `test_interpolation_earthaccess.py::test_driver_version`
   (plus the current-version lines in the skill file and `docs/HOWTO.md`, including its version
   history table, and the release line in `docs/AGENT_GUIDE.md`). README, HOWTO, AGENT_GUIDE and
   the skill file are installed by `build.sh` into the package under `share/doc/gdal-driver-nisar/`;

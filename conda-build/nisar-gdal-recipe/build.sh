@@ -28,14 +28,14 @@ if [ ! -f "$PREFIX/lib/gdalplugins/gdal_NISAR${SHLIB_EXT}" ]; then
     exit 1
 fi
 
-# User documentation. The recipe source is the recipe directory itself
-# (source: path: .), so the repository-level docs are reached through RECIPE_DIR.
+# User documentation. The recipe source is frmts/nisar (source: path: ../../frmts/nisar),
+# so the repository-level docs are reached through RECIPE_DIR.
 REPO_ROOT="$RECIPE_DIR/../.."
 DOC_DIR="$PREFIX/share/doc/${PKG_NAME}"
 mkdir -p "$DOC_DIR"
 # The README links to repository files that are not installed; point those at GitHub
 # (spaces percent-encoded) and docs/HOWTO.md at the copy installed next to it.
-REPO_URL="https://github.com/ozzp/nisar-hdf5-gdalplugin/blob/main"
+REPO_URL="https://github.com/JPL-Devin/nisar-hdf5-gdalplugin/blob/main"
 sed -E \
     -e "s#\]\(<([^>]+)>\)#](${REPO_URL}/\1)#g" \
     -e "s#\]\(([^)#:<][^):]*)\)#](${REPO_URL}/\1)#g" \

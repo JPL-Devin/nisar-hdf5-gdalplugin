@@ -1,14 +1,22 @@
+/*
+ * Copyright 2025, California Institute of Technology.
+ * All rights reserved. U.S. Government sponsorship acknowledged.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 // nisardataset.cpp
-/**************************************************************************************************************************/
-/* Copyright 2025, by the California Institute of Technology.                                                             */
-/* ALL RIGHTS RESERVED. United States Government Sponsorship acknowledged.                                                */
-/* Any commercial use must be negotiated with the Office of Technology Transfer at the California Institute of Technology.*/
-/*                                                                                                                        */
-/* This software may be subject to U.S. export control laws.                                                              */
-/* By accepting this software, the user agrees to comply with all applicable U.S. export laws and regulations.            */
-/* User has the responsibility to obtain export licenses, or other export authority as may be required                    */
-/* before exporting such information to foreign countries or providing access to foreign persons.                         */
-/**************************************************************************************************************************/
 
 #include "nisardataset.h"
 #include "nisarrasterband.h"
@@ -22,7 +30,6 @@
 #include <limits>
 #include <thread>
 
-
 #include "cpl_port.h"
 #include "cpl_conv.h"
 #include "cpl_string.h"  // For CPLStrintf, EQUAL
@@ -33,9 +40,10 @@
 #include "hdf5vfl.h"
 
 // Helper to handle API change between 3.10 and 3.12
-static std::string NisarGetExtension(const char* pszFilename)
+static std::string NisarGetExtension(const char *pszFilename)
 {
-#if GDAL_VERSION_MAJOR > 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
+#if GDAL_VERSION_MAJOR > 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
     return CPLGetExtensionSafe(pszFilename);
 #else
     return std::string(CPLGetExtension(pszFilename));
@@ -53,14 +61,14 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
                                                     const char *pszDatasetName)
 {
     std::string sResult;
-    hid_t hDataset = -1;
+    hid_t hDset = -1;
     hid_t hType = -1;
     hid_t hSpace = -1;
     hid_t hMemType = -1;
     char *pszBuffer = nullptr;
     hsize_t nStrings = 0;
-    size_t nStringSize = 0; // Size of string in *file*
-    size_t nMemStringSize = 0; // Size of string in *memory*
+    size_t nStringSize = 0;     // Size of string in *file*
+    size_t nMemStringSize = 0;  // Size of string in *memory*
     int ndims = 0;
 
     std::ostringstream oss;
@@ -72,28 +80,29 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
     // Open dataset
-    hDataset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
-    if (hDataset < 0)
+    hDset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
+    if (hDset < 0)
     {
-        goto cleanup_and_restore; // Failed to open dataset
+        goto cleanup_and_restore;  // Failed to open dataset
     }
 
     // Get type and verify it's a string
-    hType = H5Dget_type(hDataset);
+    hType = H5Dget_type(hDset);
     if (hType < 0 || H5Tget_class(hType) != H5T_STRING)
     {
-        goto cleanup_and_restore; // Not a string
+        goto cleanup_and_restore;  // Not a string
     }
-    
+
     // Size of one string element IN THE FILE
-    nStringSize = H5Tget_size(hType); 
-    if (nStringSize == 0) nStringSize = 1;
+    nStringSize = H5Tget_size(hType);
+    if (nStringSize == 0)
+        nStringSize = 1;
 
     // Get space and verify it's 1D
-    hSpace = H5Dget_space(hDataset);
+    hSpace = H5Dget_space(hDset);
     if (hSpace < 0)
     {
-         goto cleanup_and_restore;
+        goto cleanup_and_restore;
     }
     ndims = H5Sget_simple_extent_ndims(hSpace);
     if (ndims != 1)
@@ -106,36 +115,39 @@ std::string NisarDataset::ReadHDF5StringArrayAsList(hid_t hParentGroup,
     H5Sget_simple_extent_dims(hSpace, &nStrings, nullptr);
     if (nStrings == 0)
     {
-        goto cleanup_and_restore; // Empty array
+        goto cleanup_and_restore;  // Empty array
     }
-    
+
     // We want to read each fixed-length string of size N
     // into a C-string buffer of size N+1 (for the null terminator).
     nMemStringSize = nStringSize + 1;
-    
+
     hMemType = H5Tcopy(H5T_C_S1);
     H5Tset_size(hMemType, nMemStringSize);
-        
+
     // Read the entire array of strings
     // HDF5 will read each nStringSize-byte string from the file
     // and place it into a (nStringSize+1)-byte slot in pszBuffer,
     // adding the null terminator for us.
-    pszBuffer = (char *)CPLMalloc(nStrings * nMemStringSize);
-    if (H5Dread(hDataset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) < 0)
+    pszBuffer =
+        static_cast<char *>(VSI_MALLOC2_VERBOSE(nStrings, nMemStringSize));
+    if (pszBuffer == nullptr)
+        goto cleanup_and_restore;
+    if (H5Dread(hDset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) < 0)
     {
-        goto cleanup_and_restore; // Read failed
+        goto cleanup_and_restore;  // Read failed
     }
 
     // Iterate, and append
     for (hsize_t i = 0; i < nStrings; ++i)
     {
         // Point to the beginning of the i-th *null-terminated* string
-        const char* pszSourceString = pszBuffer + (i * nMemStringSize);
-        
+        const char *pszSourceString = pszBuffer + (i * nMemStringSize);
+
         oss << pszSourceString;
         if (i < nStrings - 1)
         {
-            oss << ","; // Add comma separator
+            oss << ",";  // Add comma separator
         }
     }
     sResult = oss.str();
@@ -152,11 +164,12 @@ cleanup_and_restore:
         H5Sclose(hSpace);
     if (hType >= 0)
         H5Tclose(hType);
-    if (hDataset >= 0)
-        H5Dclose(hDataset);
+    if (hDset >= 0)
+        H5Dclose(hDset);
 
     return sResult;
 }
+
 /**
  * \brief Helper function to read a scalar HDF5 string dataset.
  *
@@ -167,12 +180,12 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
                                                 const char *pszDatasetName)
 {
     std::string sResult;
-    hid_t hDataset = -1;
+    hid_t hDset = -1;
     hid_t hType = -1;
     hid_t hSpace = -1;
     hid_t hMemType = -1;
     char *pszBuffer = nullptr;
-    size_t nSize = 0; // Declared at top
+    size_t nSize = 0;  // Declared at top
 
     // Suppress HDF5 errors for this read attempt
     H5E_auto2_t old_func;
@@ -181,28 +194,28 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
     // Open dataset
-    hDataset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
-    if (hDataset < 0)
+    hDset = H5Dopen2(hParentGroup, pszDatasetName, H5P_DEFAULT);
+    if (hDset < 0)
     {
-        goto cleanup_and_restore; // Failed to open dataset
+        goto cleanup_and_restore;  // Failed to open dataset
     }
 
     // Get type and verify it's a string
-    hType = H5Dget_type(hDataset);
+    hType = H5Dget_type(hDset);
     if (hType < 0 || H5Tget_class(hType) != H5T_STRING)
     {
-        goto cleanup_and_restore; // Not a string
+        goto cleanup_and_restore;  // Not a string
     }
 
     // Get string size
     nSize = H5Tget_size(hType);
     if (nSize == 0)
     {
-        nSize = 1; // Safety
+        nSize = 1;  // Safety
     }
 
     // Get space and verify it's scalar
-    hSpace = H5Dget_space(hDataset);
+    hSpace = H5Dget_space(hDset);
     if (hSpace < 0 || H5Sget_simple_extent_ndims(hSpace) != 0)
     {
         // Note: This helper only supports scalar strings, not arrays of strings
@@ -211,14 +224,14 @@ std::string NisarDataset::ReadHDF5StringDataset(hid_t hParentGroup,
 
     // Create memory type for reading
     hMemType = H5Tcopy(H5T_C_S1);
-    H5Tset_size(hMemType, nSize + 1); // +1 for null terminator
+    H5Tset_size(hMemType, nSize + 1);           // +1 for null terminator
     H5Tset_strpad(hMemType, H5T_STR_NULLTERM);  // Explicitly ask for Null Term
 
     // Read the string
-    pszBuffer = (char *)CPLMalloc(nSize + 1);
-    if (H5Dread(hDataset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) >= 0)
+    pszBuffer = static_cast<char *>(CPLMalloc(nSize + 1));
+    if (H5Dread(hDset, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pszBuffer) >= 0)
     {
-        pszBuffer[nSize] = '\0'; // Ensure null termination
+        pszBuffer[nSize] = '\0';  // Ensure null termination
         sResult = pszBuffer;
     }
 
@@ -234,14 +247,14 @@ cleanup_and_restore:
         H5Sclose(hSpace);
     if (hType >= 0)
         H5Tclose(hType);
-    if (hDataset >= 0)
-        H5Dclose(hDataset);
+    if (hDset >= 0)
+        H5Dclose(hDset);
 
     return sResult;
 }
 
 /************************************************************************/
-/* Identify()                                                           */
+/*                              Identify()                              */
 /************************************************************************/
 
 int NisarDataset::Identify(GDALOpenInfo *poOpenInfo)
@@ -251,15 +264,17 @@ int NisarDataset::Identify(GDALOpenInfo *poOpenInfo)
 
     // Explicit Driver Prefix Check
     // Always the fastest path.
+    // The connection string is ours whatever the file extension (NISAR
+    // granules are .h5, but do not depend on it).
     if (EQUALN(poOpenInfo->pszFilename, pszPrefix, nPrefixLen))
     {
-        return (CPLString(poOpenInfo->pszFilename).ifind(".h5") != std::string::npos);
+        return TRUE;
     }
-    
+
     // Check the Header Buffer
     // GDAL pre-loads the first 1024 bytes into poOpenInfo->pHeader.
     // The HDF5 signature is: \211 H D F \r \n \032 \n
-    if (poOpenInfo->nHeaderBytes < 8 || 
+    if (poOpenInfo->nHeaderBytes < 8 ||
         memcmp(poOpenInfo->pabyHeader, "\211HDF\r\n\032\n", 8) != 0)
     {
         return FALSE;
@@ -273,20 +288,20 @@ int NisarDataset::Identify(GDALOpenInfo *poOpenInfo)
 
     if (bIsRemote)
     {
-        // For remote files, we rely on the filename containing "NISAR" 
+        // For remote files, we rely on the filename containing "NISAR"
         // OR the extension being .h5 (which we verified in step 2 via header).
         CPLString osFilename = poOpenInfo->pszFilename;
         return (osFilename.ifind("NISAR") != std::string::npos);
     }
-    
+
     // Local File Deep Check
-    // Only perform this if we are certain it's HDF5 (Step 2) but need to 
+    // Only perform this if we are certain it's HDF5 (Step 2) but need to
     // verify it's NISAR-flavored.
     H5E_auto2_t old_func;
-    void *old_client_data; 
+    void *old_client_data;
     H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
-    
+
     bool bIsNisar = false;
     hid_t hFile = H5Fopen(poOpenInfo->pszFilename, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (hFile >= 0)
@@ -302,8 +317,9 @@ int NisarDataset::Identify(GDALOpenInfo *poOpenInfo)
     H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);
     return bIsNisar;
 }
+
 /************************************************************************/
-/* ReadIdentificationMetadata()                     */
+/*                     ReadIdentificationMetadata()                     */
 /************************************************************************/
 /**
  * \brief Reads essential identification metadata.
@@ -358,7 +374,7 @@ void NisarDataset::ReadIdentificationMetadata()
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Could not find /science/LSAR/identification or "
                  "/science/SSAR/identification group in file.");
-        H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data); // Restore
+        H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);  // Restore
         return;
     }
 
@@ -369,7 +385,7 @@ void NisarDataset::ReadIdentificationMetadata()
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Found identification path '%s' but failed to open it.",
                  sIdentPath.c_str());
-        H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data); // Restore
+        H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);  // Restore
         return;
     }
 
@@ -377,7 +393,8 @@ void NisarDataset::ReadIdentificationMetadata()
     m_sProductType = ReadHDF5StringDataset(hIdentGroup, "productType");
 
     // Read productLevel
-    std::string sProductLevel = ReadHDF5StringDataset(hIdentGroup, "productLevel");
+    std::string sProductLevel =
+        ReadHDF5StringDataset(hIdentGroup, "productLevel");
 
     // Set flags based on productLevel
     if (EQUAL(sProductLevel.c_str(), "L1"))
@@ -394,28 +411,29 @@ void NisarDataset::ReadIdentificationMetadata()
     }
 
     // If productLevel was missing or weird, we force L2 for known grid types.
-    if (EQUAL(m_sProductType.c_str(), "GUNW") || 
-        EQUAL(m_sProductType.c_str(), "GCOV") || 
-        EQUAL(m_sProductType.c_str(), "GOFF") || 
+    if (EQUAL(m_sProductType.c_str(), "GUNW") ||
+        EQUAL(m_sProductType.c_str(), "GCOV") ||
+        EQUAL(m_sProductType.c_str(), "GOFF") ||
         EQUAL(m_sProductType.c_str(), "GSLC"))
     {
         m_bIsLevel2 = true;
-        m_bIsLevel3 = false; 
-        m_bIsLevel1 = false; 
+        m_bIsLevel3 = false;
+        m_bIsLevel1 = false;
     }
-    else if (EQUAL(m_sProductType.c_str(), "SME2")) // Add other L3 products here if known!
+    else if (EQUAL(m_sProductType.c_str(),
+                   "SME2"))  // Add other L3 products here if known!
     {
         m_bIsLevel3 = true;
         m_bIsLevel1 = false;
         m_bIsLevel2 = false;
     }
-    else if (EQUAL(m_sProductType.c_str(), "RSLC") || 
-             EQUAL(m_sProductType.c_str(), "RIFG") || 
+    else if (EQUAL(m_sProductType.c_str(), "RSLC") ||
+             EQUAL(m_sProductType.c_str(), "RIFG") ||
              EQUAL(m_sProductType.c_str(), "RUNW"))
     {
-        m_bIsLevel1 = true; 
+        m_bIsLevel1 = true;
         m_bIsLevel2 = false;
-        m_bIsLevel3 = false; 
+        m_bIsLevel3 = false;
     }
 
     // Restore HDF5 error handling
@@ -425,10 +443,11 @@ void NisarDataset::ReadIdentificationMetadata()
     H5Gclose(hIdentGroup);
 
     // Log results
-    CPLDebug("NISAR_DRIVER",
-             "Identified Product: INST=%s, Type=%s, Level=%s (L1=%d, L2=%d, L3=%d)",
-             m_sInst.c_str(), m_sProductType.c_str(), sProductLevel.c_str(),
-             m_bIsLevel1, m_bIsLevel2, m_bIsLevel3);
+    CPLDebug(
+        "NISAR_DRIVER",
+        "Identified Product: INST=%s, Type=%s, Level=%s (L1=%d, L2=%d, L3=%d)",
+        m_sInst.c_str(), m_sProductType.c_str(), sProductLevel.c_str(),
+        m_bIsLevel1, m_bIsLevel2, m_bIsLevel3);
 
     if (m_sProductType.empty() || sProductLevel.empty())
     {
@@ -438,47 +457,377 @@ void NisarDataset::ReadIdentificationMetadata()
     }
 }
 
-static std::string ReadStringAttribute(hid_t hLocation, const char *pszAttrName)
+// Helper to read an HDF5 attribute and add it to a CSL list
+static herr_t NISAR_AttributeCallback(hid_t hLocation, const char *attr_name,
+                                      const H5A_info_t * /*pAinfo*/,
+                                      void *op_data)
 {
-    hid_t hAttr = H5Aopen(hLocation, pszAttrName, H5P_DEFAULT);
-    if (hAttr < 0)
-        return "";
+    NISAR_AttrCallbackData *data =
+        static_cast<NISAR_AttrCallbackData *>(op_data);
 
-    std::string attr_val = "";
-    hid_t hAttrType = H5Aget_type(hAttr);
-    if (hAttrType >= 0)
+    // Skip HDF5 internal attributes that are not useful for metadata
+    if (EQUAL(attr_name, "DIMENSION_LIST") ||
+        EQUAL(attr_name, "REFERENCE_LIST") || EQUAL(attr_name, "CLASS") ||
+        EQUAL(attr_name, "NAME"))
     {
-        if (H5Tis_variable_str(hAttrType) > 0)
-        {
-            char *pszVal = nullptr;
-            if (H5Aread(hAttr, hAttrType, &pszVal) >= 0 && pszVal)
-            {
-                attr_val = pszVal;
-                H5free_memory(pszVal);
-            }
-        }
-        else
-        {  // Fixed-length string
-            size_t nSize = H5Tget_size(hAttrType);
-            char *pszVal = (char *)CPLMalloc(nSize + 1);
-            if (H5Aread(hAttr, hAttrType, pszVal) >= 0)
-            {
-                pszVal[nSize] = '\0';
-                attr_val = pszVal;
-            }
-            CPLFree(pszVal);
-        }
-        H5Tclose(hAttrType);
+        return 0;
     }
-    H5Aclose(hAttr);
-    return attr_val;
+
+    hid_t attr_id = -1;
+    hid_t attr_type = -1;
+    hid_t native_type = -1;
+    hid_t attr_space = -1;
+    std::string value_str;
+
+    attr_id =
+        H5Aopen_by_name(hLocation, ".", attr_name, H5P_DEFAULT, H5P_DEFAULT);
+    if (attr_id < 0)
+        return 0;
+
+    attr_type = H5Aget_type(attr_id);
+    attr_space = H5Aget_space(attr_id);
+
+    if (attr_type < 0 || attr_space < 0)
+    {
+        if (attr_type >= 0)
+            H5Tclose(attr_type);
+        if (attr_space >= 0)
+            H5Sclose(attr_space);
+        H5Aclose(attr_id);
+        return 0;
+    }
+
+    native_type = H5Tget_native_type(attr_type, H5T_DIR_ASCEND);
+    if (native_type < 0)
+    {
+        H5Tclose(attr_type);
+        H5Sclose(attr_space);
+        H5Aclose(attr_id);
+        return 0;
+    }
+
+    H5T_class_t type_class = H5Tget_class(native_type);
+    hssize_t n_points = H5Sget_simple_extent_npoints(attr_space);
+
+    // Process scalar attributes
+    if (n_points == 1)
+    {
+        if (type_class == H5T_STRING)
+        {
+            if (H5Tis_variable_str(native_type))
+            {
+                char *pszReadVL = nullptr;
+                if (H5Aread(attr_id, native_type, &pszReadVL) >= 0 && pszReadVL)
+                {
+                    value_str = pszReadVL;
+                    H5free_memory(pszReadVL);
+                }
+                else
+                    value_str = "(read error VL string)";
+            }
+            else
+            {  // Fixed length string
+                size_t type_size = H5Tget_size(native_type);
+                if (type_size > 0)
+                {
+                    char *pszReadFixed =
+                        static_cast<char *>(VSI_MALLOC_VERBOSE(type_size + 1));
+                    if (pszReadFixed)
+                    {
+                        if (H5Aread(attr_id, native_type, pszReadFixed) >= 0)
+                        {
+                            pszReadFixed[type_size] = '\0';
+                            value_str = pszReadFixed;
+                        }
+                        else
+                            value_str = "(read error fixed string)";
+
+                        VSIFree(pszReadFixed);
+                    }
+                    else
+                        value_str = "(memory alloc error)";
+                }
+                else
+                    value_str = "(zero size fixed string)";
+            }
+        }
+        else if (type_class == H5T_INTEGER)
+        {
+            long long llVal = 0;
+            if (H5Aread(attr_id, H5T_NATIVE_LLONG, &llVal) >= 0)
+                value_str = CPLSPrintf("%lld", llVal);
+            else
+                value_str = "(read error integer)";
+        }
+        else if (type_class == H5T_FLOAT)
+        {
+            // --- HDF5 2.0 BFLOAT16 SUPPORT ---
+            // HDF5's native type conversion implicitly handles bfloat16 datatypes here.
+            // By requesting H5T_NATIVE_DOUBLE as the destination memory type, the library
+            // automatically converts the 16-bit ml-float into standard double precision.
+            // Custom bitwise conversion is no longer required.
+            double dfVal = 0.0;
+            if (H5Aread(attr_id, H5T_NATIVE_DOUBLE, &dfVal) >= 0)
+                value_str = CPLSPrintf("%.18g", dfVal);  // Full precision
+            else
+                value_str = "(read error float)";
+        }
+#ifdef H5T_COMPLEX
+        else if (type_class == H5T_COMPLEX)
+        {
+            // HDF5 2.0 FIRST-CLASS COMPLEX SUPPORT
+            // Direct memory mapping without marshaling compounds.
+            hid_t base_type = H5Tget_super(native_type);
+
+            if (base_type >= 0)
+            {
+                if (H5Tequal(base_type, H5T_NATIVE_FLOAT) > 0)
+                {
+                    std::complex<float> cfVal;
+                    if (H5Aread(attr_id, H5T_NATIVE_FLOAT_COMPLEX, &cfVal) >= 0)
+                    {
+                        if (std::isnan(cfVal.real()) ||
+                            std::isnan(cfVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.10g + %.10gj",
+                                                   cfVal.real(), cfVal.imag());
+                    }
+                    else
+                        value_str = "(read error native complex float)";
+                }
+                else if (H5Tequal(base_type, H5T_NATIVE_DOUBLE) > 0)
+                {
+                    std::complex<double> cdVal;
+                    if (H5Aread(attr_id, H5T_NATIVE_DOUBLE_COMPLEX, &cdVal) >=
+                        0)
+                    {
+                        if (std::isnan(cdVal.real()) ||
+                            std::isnan(cdVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.18g + %.18gj",
+                                                   cdVal.real(), cdVal.imag());
+                    }
+                    else
+                        value_str = "(read error native complex double)";
+                }
+                else
+                {
+                    value_str = "(unhandled native complex base type)";
+                }
+                H5Tclose(base_type);
+            }
+        }
+#endif
+        // Handle Compound Type (Fallback for pre-HDF5 2.0 NISAR datasets)
+        else if (type_class == H5T_COMPOUND)
+        {
+            hid_t hRealType = -1;
+            hid_t hImagType = -1;
+            char *name1 = nullptr;
+            char *name2 = nullptr;
+            bool bIsComplex = false;
+            GDALDataType eBaseType = GDT_Unknown;
+
+            if (H5Tget_nmembers(native_type) == 2)
+            {
+                hRealType = H5Tget_member_type(native_type, 0);
+                hImagType = H5Tget_member_type(native_type, 1);
+
+                if (hRealType >= 0 && hImagType >= 0)
+                {
+                    if (H5Tequal(hRealType, hImagType) > 0)
+                    {
+                        name1 = H5Tget_member_name(native_type, 0);
+                        name2 = H5Tget_member_name(native_type, 1);
+
+                        // Check conventional naming ('r'/'i' or 'R'/'I')
+                        bool isReal =
+                            (name1 && (name1[0] == 'r' || name1[0] == 'R'));
+                        bool isImaginary =
+                            (name2 && (name2[0] == 'i' || name2[0] == 'I'));
+
+                        if (isReal && isImaginary)
+                        {
+                            bIsComplex = true;
+                            if (H5Tequal(hRealType, H5T_NATIVE_FLOAT) > 0)
+                                eBaseType = GDT_Float32;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_DOUBLE) > 0)
+                                eBaseType = GDT_Float64;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_SHORT) > 0)
+                                eBaseType = GDT_Int16;
+                            else if (H5Tequal(hRealType, H5T_NATIVE_INT) > 0)
+                                eBaseType = GDT_Int32;
+                        }
+                    }
+                    H5Tclose(hRealType);
+                    hRealType = -1;
+                    H5Tclose(hImagType);
+                    hImagType = -1;
+                }
+                else
+                {
+                    if (hRealType >= 0)
+                        H5Tclose(hRealType);
+                    if (hImagType >= 0)
+                        H5Tclose(hImagType);
+                }
+
+                if (name1)
+                    H5free_memory(name1);
+                if (name2)
+                    H5free_memory(name2);
+            }
+
+            if (bIsComplex && eBaseType != GDT_Unknown)
+            {
+                if (eBaseType == GDT_Float32)
+                {
+                    std::complex<float> cfVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(std::complex<float>));
+                    H5Tinsert(mem_type, "r", 0, H5T_NATIVE_FLOAT);
+                    H5Tinsert(mem_type, "i", sizeof(float), H5T_NATIVE_FLOAT);
+                    if (H5Aread(attr_id, mem_type, &cfVal) >= 0)
+                    {
+                        if (std::isnan(cfVal.real()) ||
+                            std::isnan(cfVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.10g + %.10gj",
+                                                   cfVal.real(), cfVal.imag());
+                    }
+                    else
+                        value_str = "(read error compound complex float)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Float64)
+                {
+                    std::complex<double> cdVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(std::complex<double>));
+                    H5Tinsert(mem_type, "r", 0, H5T_NATIVE_DOUBLE);
+                    H5Tinsert(mem_type, "i", sizeof(double), H5T_NATIVE_DOUBLE);
+                    if (H5Aread(attr_id, mem_type, &cdVal) >= 0)
+                    {
+                        if (std::isnan(cdVal.real()) ||
+                            std::isnan(cdVal.imag()))
+                            value_str = "nan";
+                        else
+                            value_str = CPLSPrintf("%.18g + %.18gj",
+                                                   cdVal.real(), cdVal.imag());
+                    }
+                    else
+                        value_str = "(read error compound complex double)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Int16)
+                {
+                    ComplexInt16Attr ciVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(ComplexInt16Attr));
+                    H5Tinsert(mem_type, "r", HOFFSET(ComplexInt16Attr, r),
+                              H5T_NATIVE_SHORT);
+                    H5Tinsert(mem_type, "i", HOFFSET(ComplexInt16Attr, i),
+                              H5T_NATIVE_SHORT);
+                    if (H5Aread(attr_id, mem_type, &ciVal) >= 0)
+                        value_str = CPLSPrintf("%d + %dj", ciVal.r, ciVal.i);
+                    else
+                        value_str = "(read error complex int16)";
+
+                    H5Tclose(mem_type);
+                }
+                else if (eBaseType == GDT_Int32)
+                {
+                    ComplexInt32Attr ciVal;
+                    hid_t mem_type =
+                        H5Tcreate(H5T_COMPOUND, sizeof(ComplexInt32Attr));
+                    H5Tinsert(mem_type, "r", HOFFSET(ComplexInt32Attr, r),
+                              H5T_NATIVE_INT);
+                    H5Tinsert(mem_type, "i", HOFFSET(ComplexInt32Attr, i),
+                              H5T_NATIVE_INT);
+                    if (H5Aread(attr_id, mem_type, &ciVal) >= 0)
+                        value_str = CPLSPrintf("%d + %dj", ciVal.r, ciVal.i);
+                    else
+                        value_str = "(read error complex int32)";
+
+                    H5Tclose(mem_type);
+                }
+                else
+                {
+                    value_str = "(unhandled complex base type)";
+                }
+            }
+            else
+            {
+                value_str = "(compound data)";
+            }
+        }
+        else if (type_class == H5T_VLEN)
+        {
+            value_str = "(variable-length data)";
+        }
+    }
+
+    if (value_str.empty())
+    {
+        const char *class_name = "Unknown";
+        switch (type_class)
+        {
+            case H5T_INTEGER:
+                class_name = "Integer";
+                break;
+            case H5T_FLOAT:
+                class_name = "Float";
+                break;
+            case H5T_STRING:
+                class_name = "String";
+                break;
+#ifdef H5T_COMPLEX
+            case H5T_COMPLEX:
+                class_name = "Complex";
+                break;
+#endif
+            case H5T_COMPOUND:
+                class_name = "Compound";
+                break;
+            case H5T_VLEN:
+                class_name = "VLEN";
+                break;
+            default:
+                break;
+        }
+        value_str = CPLSPrintf("(unhandled attr: class=%s, points=%lld)",
+                               class_name, static_cast<long long>(n_points));
+    }
+
+    std::string finalKey;
+    if (data->pszPrefix && data->pszPrefix[0] != '\0')
+        finalKey = std::string(data->pszPrefix) + "#" + attr_name;
+    else
+        finalKey = attr_name;
+
+    *(data->ppapszList) = CSLSetNameValue(*(data->ppapszList), finalKey.c_str(),
+                                          value_str.c_str());
+
+    // Cleanup HDF5 handles
+    H5Tclose(native_type);
+    H5Tclose(attr_type);
+    H5Sclose(attr_space);
+    H5Aclose(attr_id);
+    return 0;  // Success
 }
 
 // Helper to read a string attribute from an HDF5 object
-static std::string ReadH5StringAttribute(hid_t hObjectID, const char *pszAttrName)
+static std::string ReadH5StringAttribute(hid_t hObjectID,
+                                         const char *pszAttrName)
 {
     // Suppress errors for this check
-    H5E_auto2_t old_func; void *old_client_data;
+    H5E_auto2_t old_func;
+    void *old_client_data;
     H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
@@ -487,17 +836,18 @@ static std::string ReadH5StringAttribute(hid_t hObjectID, const char *pszAttrNam
         H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);
         return "";
     }
-    
+
     // Use H5Aopen (modern API)
     hid_t hAttr = H5Aopen(hObjectID, pszAttrName, H5P_DEFAULT);
-    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data); // Restore errors
-    
-    if (hAttr < 0) return "";
+    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);  // Restore errors
+
+    if (hAttr < 0)
+        return "";
 
     std::string strVal;
     hid_t hAttrType = H5Aget_type(hAttr);
     hid_t hAttrSpace = H5Aget_space(hAttr);
-    
+
     // --- CRITICAL FIX: Create a native memory type for reading strings ---
     // This ensures HDF5 handles the conversion from NULLPAD (File) to NULLTERM (Memory)
     hid_t hMemType = H5Tcopy(H5T_C_S1);
@@ -523,12 +873,12 @@ static std::string ReadH5StringAttribute(hid_t hObjectID, const char *pszAttrNam
                 H5Tset_size(hMemType, nSize + 1);
                 H5Tset_strpad(hMemType, H5T_STR_NULLTERM);
 
-                char *pszVal = (char *)CPLMalloc(nSize + 1);
-                
+                char *pszVal = static_cast<char *>(CPLMalloc(nSize + 1));
+
                 // Read using hMemType (Memory), not hAttrType (File)
                 if (H5Aread(hAttr, hMemType, pszVal) >= 0)
                 {
-                    pszVal[nSize] = '\0'; // Safety null termination
+                    pszVal[nSize] = '\0';  // Safety null termination
                     strVal = pszVal;
                 }
                 CPLFree(pszVal);
@@ -557,13 +907,6 @@ struct NISAR_AttrCallbackData_SetItem
     NisarDataset *poDS;  // Pointer to the dataset object
 };
 
-// Struct and Callback for Reading Identification Datasets
-struct NISAR_IdentCallbackData
-{
-    char ***ppapszList;  // Pointer to the CSL list pointer being built
-    hid_t hIdentGroup;   // Handle to the identification group
-};
-
 // Struct to pass data to H5Aiterate callback
 struct MetadataAttrCallbackData
 {
@@ -581,188 +924,10 @@ struct MetadataVisitData
 // Define struct to pass data to visitor
 struct NISARVisitorData
 {
-    std::vector<std::string> *pFoundPaths;  // Pointer to list in Open()
-    hid_t
-        hStartingGroupID;  // Pass group/file ID for opening datasets inside visitor
-    std::string sBasePath; // Absolute path prefix for GDAL Subdatasets
+    std::vector<std::string> *pFoundPaths = nullptr;  // list in Open()
+    hid_t hStartingGroupID = -1;  // group/file ID for opening datasets
+    std::string sBasePath{};      // path prefix for GDAL subdatasets
 };
-
-// Callback for H5LiterateByName - reads scalar datasets in identification group
-static herr_t NISAR_IdentificationDatasetCallback(hid_t group_id,
-                                                  const char *member_name,
-                                                  const H5L_info2_t * /*linfo*/,
-                                                  void *op_data)
-{
-    NISAR_IdentCallbackData *data =
-        static_cast<NISAR_IdentCallbackData *>(op_data);
-    if (!data || !data->ppapszList || data->hIdentGroup < 0)
-        return H5_ITER_ERROR;
-
-    hid_t dset_id = -1;
-    hid_t dtype = -1;
-    hid_t dspace = -1;
-    std::string value_str = "(Error reading dataset)";
-    herr_t status = -1;
-    bool bValueSet = false;
-
-    // Check if the object is a dataset (optional, H5Dopen2 will fail otherwise)
-    H5O_info2_t oinfo;
-    if (H5Oget_info_by_name3(group_id, member_name, &oinfo, H5O_INFO_BASIC,
-                             H5P_DEFAULT) < 0 ||
-        oinfo.type != H5O_TYPE_DATASET)
-    {
-        return H5_ITER_CONT;  // Skip non-datasets
-    }
-
-    // Open the dataset
-    dset_id = H5Dopen2(data->hIdentGroup, member_name, H5P_DEFAULT);
-    if (dset_id < 0)
-    {
-        CPLError(CE_Warning, CPLE_AppDefined,
-                 "IdentCallback: Failed to open dataset '%s'", member_name);
-        return H5_ITER_CONT;  // Continue
-    }
-
-    dspace = H5Dget_space(dset_id);
-    dtype = H5Dget_type(dset_id);
-    if (dspace < 0 || dtype < 0)
-        goto ident_cleanup;
-
-    // Check if it's a scalar dataset
-    if (H5Sget_simple_extent_type(dspace) == H5S_SCALAR)
-    {
-        H5T_class_t type_class = H5Tget_class(dtype);
-        size_t type_size = H5Tget_size(dtype);
-
-        // Read Scalar Value (Primarily expecting strings)
-        if (type_class == H5T_STRING)
-        {
-            char *pszReadVL = nullptr;
-            char *pszReadFixed = nullptr;
-            bool bIsVariable = H5Tis_variable_str(dtype);
-            hid_t mem_type = H5Tcopy(H5T_C_S1);
-            if (mem_type < 0)
-                goto ident_cleanup;
-
-            if (bIsVariable)
-            {
-                H5Tset_size(mem_type, H5T_VARIABLE);
-                status = H5Dread(dset_id, mem_type, H5S_ALL, H5S_ALL,
-                                 H5P_DEFAULT, &pszReadVL);
-                if (status >= 0 && pszReadVL != nullptr)
-                {
-                    value_str = pszReadVL;
-                    bValueSet = true;
-                    H5free_memory(pszReadVL);
-                }
-                else
-                {
-                    CPLError(CE_Warning, CPLE_FileIO,
-                             "Failed read VLEN string dataset '%s'",
-                             member_name);
-                }
-            }
-            else if (type_size > 0)
-            {  // Fixed length string
-                // We must allocate type_size + 1 in the MEMORY type to hold the null terminator.
-                // If we use type_size, HDF5 will truncate the string to make room for \0.
-                H5Tset_size(mem_type, type_size+1);
-                H5Tset_strpad(mem_type, H5T_STR_NULLTERM);
-                pszReadFixed = (char *)VSIMalloc(type_size + 1);
-                if (pszReadFixed)
-                {
-                    status = H5Dread(dset_id, mem_type, H5S_ALL, H5S_ALL,
-                                     H5P_DEFAULT, pszReadFixed);
-                    if (status >= 0)
-                    {
-                        pszReadFixed[type_size] = '\0';
-                        value_str = pszReadFixed;
-                        bValueSet = true;
-                    }
-                    else
-                    {
-                        CPLError(CE_Warning, CPLE_FileIO,
-                                 "Failed read fixed string dataset '%s'",
-                                 member_name);
-                    }
-                    VSIFree(pszReadFixed);
-                }
-                else
-                {
-                    CPLError(CE_Failure, CPLE_OutOfMemory,
-                             "Malloc failed for fixed string dataset '%s'",
-                             member_name);
-                }
-            }
-            if (mem_type >= 0)
-            {
-                H5Tclose(mem_type);
-                mem_type = -1;
-            }
-        }
-        // Add simple integer/float reads if needed for identification group
-        else if (type_class == H5T_INTEGER)
-        {
-            long long llVal = 0;
-            status = H5Dread(dset_id, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL,
-                             H5P_DEFAULT, &llVal);
-            if (status >= 0)
-            {
-                value_str = CPLSPrintf("%lld", llVal);
-                bValueSet = true;
-            }
-            else
-            {
-                CPLError(CE_Warning, CPLE_FileIO,
-                         "Failed read integer dataset '%s'", member_name);
-            }
-        }
-        else if (type_class == H5T_FLOAT)
-        {
-            double dfVal = 0.0;
-            status = H5Dread(dset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
-                             H5P_DEFAULT, &dfVal);
-            if (status >= 0)
-            {
-                value_str = CPLSPrintf("%.18g", dfVal);
-                bValueSet = true;
-            }
-            else
-            {
-                CPLError(CE_Warning, CPLE_FileIO,
-                         "Failed read float dataset '%s'", member_name);
-            }
-        }
-        else
-        {
-            value_str = "(unhandled scalar dataset type)";
-            bValueSet = true;
-        }
-    }
-    else
-    {
-        // Skip non-scalar datasets within identification group
-        CPLDebug("NISAR_IDENT_CB",
-                 "Skipping non-scalar dataset '%s' in identification group.",
-                 member_name);
-    }
-
-    // If we successfully read a value, add NAME=VALUE to list
-    if (bValueSet)
-    {
-        *(data->ppapszList) = CSLSetNameValue(*(data->ppapszList), member_name,
-                                              value_str.c_str());
-    }
-
-ident_cleanup:
-    if (dtype >= 0)
-        H5Tclose(dtype);
-    if (dspace >= 0)
-        H5Sclose(dspace);
-    if (dset_id >= 0)
-        H5Dclose(dset_id);
-    return 0;  // Continue H5Literate iteration
-}
 
 // Visitor callback function compatible with H5LiterateByName
 static herr_t NISAR_FindDatasetsVisitor(
@@ -786,7 +951,7 @@ static herr_t NISAR_FindDatasetsVisitor(
 
     // Log entry for every object visited
     CPLDebug("NISAR_VISITOR_DETAIL", "Visiting object: Path='%s', Type=%d",
-             name, (int)oinfo->type);
+             name, static_cast<int>(oinfo->type));
 
     // Filter 1: Only consider actual Datasets
     if (oinfo->type != H5O_TYPE_DATASET)
@@ -814,7 +979,8 @@ static herr_t NISAR_FindDatasetsVisitor(
     {
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Could not open dataset '%s' using H5Dopen2 during subdataset "
-                 "discovery.", name);
+                 "discovery.",
+                 name);
         return H5_ITER_CONT;  // Skip if cannot open
     }
 
@@ -822,8 +988,7 @@ static herr_t NISAR_FindDatasetsVisitor(
     if (H5Iget_type(dset_id) != H5I_DATASET)
     {
         CPLDebug("NISAR_VISITOR_DETAIL",
-                 "--> Skipping '%s' (Opened object is not H5I_DATASET)",
-                 name);
+                 "--> Skipping '%s' (Opened object is not H5I_DATASET)", name);
         H5Dclose(dset_id);
         return H5_ITER_CONT;
     }
@@ -997,7 +1162,7 @@ GDALDataType NisarDataset::GetGDALDataType(hid_t hH5Type)
     {
         CPLDebug("NISAR_GetGDALDataType",
                  "Checking HDF5 2.0 Native Complex type for GDAL mapping.");
-                 
+
         hid_t hBaseType = H5Tget_super(hH5Type);
         GDALDataType eComplexType = GDT_Unknown;
 
@@ -1087,7 +1252,7 @@ GDALDataType NisarDataset::GetGDALDataType(hid_t hH5Type)
                 hImagType = -1;
             }
             else
-            { // Handle error getting member types
+            {  // Handle error getting member types
                 if (hRealType >= 0)
                     H5Tclose(hRealType);
                 if (hImagType >= 0)
@@ -1116,7 +1281,7 @@ GDALDataType NisarDataset::GetGDALDataType(hid_t hH5Type)
     CPLError(CE_Warning, CPLE_AppDefined,
              "NisarDataset::GetGDALDataType(): Unhandled or unsupported HDF5 "
              "data type (Class: %d).",
-             (int)eHDF5Class);
+             static_cast<int>(eHDF5Class));
     return GDT_Unknown;  // Default fallback if no mapping found
 }
 
@@ -1146,7 +1311,7 @@ CPLErr NisarDataset::ReadGeoTransformAttribute(hid_t hObjectID,
         else
             CPLDebug("NISAR_ATTR",
                      "Attribute '%s' does not exist on object %lld.",
-                     pszAttrName, (long long)hObjectID);
+                     pszAttrName, static_cast<long long>(hObjectID));
         goto cleanup;
     }
 
@@ -1175,7 +1340,7 @@ CPLErr NisarDataset::ReadGeoTransformAttribute(hid_t hObjectID,
     {
         CPLError(CE_Warning, CPLE_AppDefined,
                  "Attribute '%s' does not have 6 elements (found %lld).",
-                 pszAttrName, (long long)nPoints);
+                 pszAttrName, static_cast<long long>(nPoints));
         goto cleanup;
     }
 
@@ -1203,37 +1368,15 @@ cleanup:  // Label for resource cleanup
 }
 
 /************************************************************************/
-/*                            NisarDataset()                          */
+/*                            NisarDataset()                            */
 /************************************************************************/
 
 NisarDataset::NisarDataset()
-    : hHDF5(H5I_INVALID_HID),
-      hDataset(H5I_INVALID_HID),
-      eDataType(GDT_Unknown),
-      pszFilename(nullptr),
-      papszSubDatasets(nullptr),
-      m_poSRS(nullptr),  // Initialize SRS pointer
-      m_bGotSRS(false),  // Initialize SRS flag
-      m_bGotMetadata(false),
-      m_papszGlobalMetadata(nullptr),  // Initialize global metadata cache
-      m_bGotGlobalMetadata(false),     // Initialize global metadata flag
-      m_bIsLevel1(false),
-      m_bIsLevel2(false),
-      m_bIsLevel3(false),
-      m_bGotGeoTransform(false)
 {
-
-    // Initialize GT array cache if using caching pattern for it
-     m_adfGeoTransform[0] = 0.0;
-     m_adfGeoTransform[1] = 1.0;
-     m_adfGeoTransform[2] = 0.0;
-     m_adfGeoTransform[3] = 0.0;
-     m_adfGeoTransform[4] = 0.0;
-     m_adfGeoTransform[5] = 1.0;
 }
 
 /************************************************************************/
-/*                            ~NisarDataset()                         */
+/*                           ~NisarDataset()                            */
 /************************************************************************/
 
 NisarDataset::~NisarDataset()
@@ -1353,8 +1496,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
             {
                 if (bIsVariable)
                 {
-                    char **pszVals =
-                        (char **)CPLMalloc(nTotalSize * sizeof(char *));
+                    char **pszVals = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nTotalSize, sizeof(char *)));
                     if (pszVals && H5Dread(hDset, hNativeDtype, H5S_ALL,
                                            H5S_ALL, H5P_DEFAULT, pszVals) >= 0)
                     {
@@ -1372,8 +1515,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBuffer =
-                        (char *)VSI_MALLOC_VERBOSE(nTotalSize * nFixedSize);
+                    char *pszBuffer = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nTotalSize, nFixedSize));
                     if (pszBuffer &&
                         H5Dread(hDset, hNativeDtype, H5S_ALL, H5S_ALL,
                                 H5P_DEFAULT, pszBuffer) >= 0)
@@ -1405,8 +1548,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                                     count, nullptr);
                 if (bIsVariable)
                 {
-                    char **pszValsHead =
-                        (char **)CPLMalloc(nHeadTail * sizeof(char *));
+                    char **pszValsHead = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, sizeof(char *)));
                     if (pszValsHead &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszValsHead) >= 0)
@@ -1421,8 +1564,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBufferHead =
-                        (char *)VSI_MALLOC_VERBOSE(nHeadTail * nFixedSize);
+                    char *pszBufferHead = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, nFixedSize));
                     if (pszBufferHead &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszBufferHead) >= 0)
@@ -1440,8 +1583,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                                     count, nullptr);
                 if (bIsVariable)
                 {
-                    char **pszValsTail =
-                        (char **)CPLMalloc(nHeadTail * sizeof(char *));
+                    char **pszValsTail = static_cast<char **>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, sizeof(char *)));
                     if (pszValsTail &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszValsTail) >= 0)
@@ -1456,8 +1599,8 @@ static std::string Read1DArraySummary(hid_t hGroup, const char *pszDsetName,
                 }
                 else
                 {  // Fixed length
-                    char *pszBufferTail =
-                        (char *)VSI_MALLOC_VERBOSE(nHeadTail * nFixedSize);
+                    char *pszBufferTail = static_cast<char *>(
+                        VSI_MALLOC2_VERBOSE(nHeadTail, nFixedSize));
                     if (pszBufferTail &&
                         H5Dread(hDset, hNativeDtype, hMemSpace, hSpace,
                                 H5P_DEFAULT, pszBufferTail) >= 0)
@@ -1573,27 +1716,32 @@ cleanup:
 }
 
 /************************************************************************/
-/*                          GetMetadataDomainList()                     */
+/*                       GetMetadataDomainList()                        */
 /************************************************************************/
 
 char **NisarDataset::GetMetadataDomainList()
 {
     CPLDebug("NISAR_DRIVER", "GetMetadataDomainList called");
     char **papszDomains = GDALPamDataset::GetMetadataDomainList();
-    papszDomains =
-        CSLAddString(papszDomains, "NISAR_GLOBAL");  // Add our global domain
-    // Add SUBDATASETS if populated by Open
+    // The base class may already list some of these (e.g. SUBDATASETS when
+    // set through SetMetadata()), so only add what is missing.
+    const auto AddDomain = [&papszDomains](const char *pszDomain)
+    {
+        if (CSLFindString(papszDomains, pszDomain) < 0)
+            papszDomains = CSLAddString(papszDomains, pszDomain);
+    };
+    AddDomain("NISAR_GLOBAL");
     if (papszSubDatasets != nullptr)
-        papszDomains = CSLAddString(papszDomains, "SUBDATASETS");
+        AddDomain("SUBDATASETS");
     if (m_bDumpEnabled)
-        papszDomains = CSLAddString(papszDomains, "NISAR_DUMP");
+        AddDomain("NISAR_DUMP");
 
     // Add DERIVED_SUBDATASETS if this is a raster dataset (not container)
     // and the type is numeric.
     // hDataset is > 0 for a specific raster, eDataType is set in Open()
     if (hDataset >= 0 && (eDataType > GDT_Unknown && eDataType < GDT_CInt16))
     {
-        papszDomains = CSLAddString(papszDomains, "DERIVED_SUBDATASETS");
+        AddDomain("DERIVED_SUBDATASETS");
     }
 
     return papszDomains;
@@ -1671,7 +1819,8 @@ static herr_t NISAR_DatasetMetadataCallback(hid_t hGroup, const char *pszName,
                     size_t nSize = H5Tget_size(hDtype);
                     if (nSize > 0)
                     {
-                        char *pszVal = (char *)CPLMalloc(nSize + 1);
+                        char *pszVal =
+                            static_cast<char *>(CPLMalloc(nSize + 1));
                         if (H5Dread(hDset, hDtype, H5S_ALL, H5S_ALL,
                                     H5P_DEFAULT, pszVal) >= 0)
                         {
@@ -1732,7 +1881,7 @@ cleanup:
 /*                            GetMetadata()                             */
 /************************************************************************/
 
-char **NisarDataset::GetMetadata(const char *pszDomain)
+NisarMetadataList NisarDataset::GetMetadata(const char *pszDomain)
 
 {
     // Handle NISAR_GLOBAL Domain (Cached)
@@ -1744,7 +1893,7 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
                  m_bGotGlobalMetadata);
         if (m_bGotGlobalMetadata)
         {
-            return CSLDuplicate(m_papszGlobalMetadata);  // Return copy
+            return m_papszGlobalMetadata;
         }
         m_bGotGlobalMetadata = true;
         CSLDestroy(m_papszGlobalMetadata);
@@ -1771,13 +1920,13 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
         CPLDebug("NISAR_DRIVER",
                  "Finished reading for NISAR_GLOBAL. Found %d items.",
                  CSLCount(m_papszGlobalMetadata));
-        return CSLDuplicate(m_papszGlobalMetadata);  // Return copy
+        return m_papszGlobalMetadata;
     }
 
     // Handle SUBDATASETS Domain
     if (pszDomain != nullptr && EQUAL(pszDomain, "SUBDATASETS"))
     {
-        return CSLDuplicate(papszSubDatasets);  // Return copy
+        return papszSubDatasets;
     }
 
     // Handle NISAR_DUMP Domain (h5dump-style listing, lazily built)
@@ -1826,8 +1975,9 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             // were set during NisarDataset::Open()
             if (m_sInst.empty() || m_sProductType.empty())
             {
-                CPLError(CE_Warning, CPLE_AppDefined,
-                "Dataset product info not set. Cannot find L1 metadata.");
+                CPLError(
+                    CE_Warning, CPLE_AppDefined,
+                    "Dataset product info not set. Cannot find L1 metadata.");
             }
             else
             {
@@ -1925,17 +2075,18 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             // Hoist 3D Dataset Attributes to GDAL Dataset
             NISAR_AttrCallbackData dset_attr_cb_data;
             dset_attr_cb_data.ppapszList = &papszHDFMetadata;
-            dset_attr_cb_data.pszPrefix = ""; // No prefix, attach directly to root
+            dset_attr_cb_data.pszPrefix =
+                "";  // No prefix, attach directly to root
             hsize_t attr_idx = 0;
-            
+
             // Read attributes like 'description', 'units', '_FillValue' from the dataset
-            H5Aiterate2(this->hDataset, H5_INDEX_NAME, H5_ITER_NATIVE, &attr_idx,
-                        NISAR_AttributeCallback, &dset_attr_cb_data);
+            H5Aiterate2(this->hDataset, H5_INDEX_NAME, H5_ITER_NATIVE,
+                        &attr_idx, NISAR_AttributeCallback, &dset_attr_cb_data);
 
             std::string datasetPath = get_hdf5_object_name(this->hDataset);
 
             // Determine the parent group path by anchoring to the frequency group
-            // rather than the immediate parent directory, as GUNW products have deeper nesting 
+            // rather than the immediate parent directory, as GUNW products have deeper nesting
             // (e.g., /science/LSAR/GUNW/grids/frequencyA/pixelOffsets/HH/...)
             std::string gridsBasePath;
             size_t freqPosA = datasetPath.find("/frequencyA/");
@@ -1944,7 +2095,7 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             if (freqPosA != std::string::npos)
             {
                 // +12 captures "/frequencyA/" perfectly including the trailing slash
-                gridsBasePath = datasetPath.substr(0, freqPosA + 12); 
+                gridsBasePath = datasetPath.substr(0, freqPosA + 12);
             }
             else if (freqPosB != std::string::npos)
             {
@@ -1961,7 +2112,8 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
                 else
                 {
                     CPLError(CE_Warning, CPLE_AppDefined,
-                             "Could not determine parent group path for L2/L3 metadata from %s.",
+                             "Could not determine parent group path for L2/L3 "
+                             "metadata from %s.",
                              datasetPath.c_str());
                     gridsBasePath = "";
                 }
@@ -2077,11 +2229,13 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
-            if (H5Lexists(this->hHDF5, "/science/LSAR/identification", H5P_DEFAULT) > 0)
+            if (H5Lexists(this->hHDF5, "/science/LSAR/identification",
+                          H5P_DEFAULT) > 0)
             {
                 sIdentPath = "/science/LSAR/identification";
             }
-            else if (H5Lexists(this->hHDF5, "/science/SSAR/identification", H5P_DEFAULT) > 0)
+            else if (H5Lexists(this->hHDF5, "/science/SSAR/identification",
+                               H5P_DEFAULT) > 0)
             {
                 sIdentPath = "/science/SSAR/identification";
             }
@@ -2092,15 +2246,17 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             if (!sIdentPath.empty())
             {
                 CPLDebug("NISAR_DRIVER",
-                         "Reading default metadata from root group ('%s') for container dataset.",
-                          sIdentPath.c_str());
-                hid_t hIdentGroup = H5Gopen2(this->hHDF5, sIdentPath.c_str(), H5P_DEFAULT);
+                         "Reading default metadata from root group ('%s') for "
+                         "container dataset.",
+                         sIdentPath.c_str());
+                hid_t hIdentGroup =
+                    H5Gopen2(this->hHDF5, sIdentPath.c_str(), H5P_DEFAULT);
                 if (hIdentGroup >= 0)
                 {
                     callback_data.pszPrefix = sIdentPath.c_str();
-                    idx = 0; //Reset the iterator index
+                    idx = 0;  //Reset the iterator index
                     H5Literate(hIdentGroup, H5_INDEX_NAME, H5_ITER_NATIVE, &idx,
-                        NISAR_DatasetMetadataCallback, &callback_data);
+                               NISAR_DatasetMetadataCallback, &callback_data);
 
                     // Clean up the handle
                     H5Gclose(hIdentGroup);
@@ -2108,7 +2264,9 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
             }
             else
             {
-                CPLDebug("NISAR_DRIVER", "No identification group found for container dataset.");
+                CPLDebug(
+                    "NISAR_DRIVER",
+                    "No identification group found for container dataset.");
             }
         }
 
@@ -2137,18 +2295,23 @@ char **NisarDataset::GetMetadata(const char *pszDomain)
 // Structure to pass state into the H5Ovisit callback
 struct NISAR_MetadataVisitData
 {
-    NisarDataset* poDS;
-    char** papszMetadata; // CSL list being built
-    std::string sPrefix;  // Optional prefix if needed
+    NisarDataset *poDS = nullptr;
+    char **papszMetadata = nullptr;  // CSL list being built
+    std::string sPrefix{};           // Optional prefix if needed
 };
 
 // Callback for H5Ovisit to recursively read metadata
-herr_t NisarDataset::MetadataVisitCallback(hid_t hGroup, const char *name, const H5O_info2_t *info, void *op_data)
+herr_t NisarDataset::MetadataVisitCallback(hid_t hGroup, const char *name,
+                                           const H5O_info2_t *info,
+                                           void *op_data)
 {
-    NISAR_MetadataVisitData* data = static_cast<NISAR_MetadataVisitData*>(op_data);
-    
-    if (EQUAL(name, ".")) return 0;
-    if (info->type != H5O_TYPE_DATASET) return 0; 
+    NISAR_MetadataVisitData *data =
+        static_cast<NISAR_MetadataVisitData *>(op_data);
+
+    if (EQUAL(name, "."))
+        return 0;
+    if (info->type != H5O_TYPE_DATASET)
+        return 0;
 
     // Identify Key Name early to skip expensive reads
     std::string sKey = name;
@@ -2156,34 +2319,40 @@ herr_t NisarDataset::MetadataVisitCallback(hid_t hGroup, const char *name, const
     std::replace(sKey.begin(), sKey.end(), '/', '_');
 
     // FILTER: Skip massive configuration dumps
-    if (sKey.find("runConfigurationContents") != std::string::npos) {
-        return 0; // Skip entirely
+    if (sKey.find("runConfigurationContents") != std::string::npos)
+    {
+        return 0;  // Skip entirely
     }
 
     hid_t hDset = H5Dopen2(hGroup, name, H5P_DEFAULT);
-    if (hDset < 0) return 0;
+    if (hDset < 0)
+        return 0;
 
     hid_t hSpace = H5Dget_space(hDset);
     int nRank = H5Sget_simple_extent_ndims(hSpace);
     hid_t hType = H5Dget_type(hDset);
     H5T_class_t type_class = H5Tget_class(hType);
-    
+
     bool bShouldRead = false;
 
     // Logic: Read Scalars and 1-element Strings
-    if (nRank == 0) {
-        bShouldRead = true; 
+    if (nRank == 0)
+    {
+        bShouldRead = true;
     }
 
-    else if (nRank == 1) {
+    else if (nRank == 1)
+    {
         hsize_t dims;
         H5Sget_simple_extent_dims(hSpace, &dims, nullptr);
 
-        if (type_class == H5T_STRING) {
-            bShouldRead = true; 
+        if (type_class == H5T_STRING)
+        {
+            bShouldRead = true;
         }
-        else if (dims == 1) {
-            bShouldRead = true; 
+        else if (dims == 1)
+        {
+            bShouldRead = true;
         }
     }
 
@@ -2191,16 +2360,21 @@ herr_t NisarDataset::MetadataVisitCallback(hid_t hGroup, const char *name, const
     {
         std::string sValue;
 
-        if (type_class == H5T_STRING && nRank == 1) {
+        if (type_class == H5T_STRING && nRank == 1)
+        {
             sValue = data->poDS->ReadHDF5StringArrayAsList(hGroup, name);
         }
-        else {
-             sValue = data->poDS->ReadHDF5StringDataset(hGroup, name);
+        else
+        {
+            sValue = data->poDS->ReadHDF5StringDataset(hGroup, name);
         }
-        
-        if (sValue.empty() && type_class != H5T_STRING) {
+
+        if (sValue.empty() && type_class != H5T_STRING)
+        {
             double dfVal;
-            if (H5Dread(hDset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &dfVal) >= 0) {
+            if (H5Dread(hDset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                        &dfVal) >= 0)
+            {
                 sValue = CPLSPrintf("%.15g", dfVal);
             }
         }
@@ -2208,82 +2382,116 @@ herr_t NisarDataset::MetadataVisitCallback(hid_t hGroup, const char *name, const
         if (!sValue.empty())
         {
             // SANITIZE: Remove Newlines
-            if (sValue.find('\n') != std::string::npos || sValue.find('\r') != std::string::npos) {
+            if (sValue.find('\n') != std::string::npos ||
+                sValue.find('\r') != std::string::npos)
+            {
                 std::replace(sValue.begin(), sValue.end(), '\n', ' ');
                 std::replace(sValue.begin(), sValue.end(), '\r', ' ');
             }
 
             // START UNIT READING BLOCK
             std::string sUnits = ReadH5StringAttribute(hDset, "units");
-            if (!sUnits.empty() && 
-                !EQUAL(sUnits.c_str(), "unitless") && 
+            if (!sUnits.empty() && !EQUAL(sUnits.c_str(), "unitless") &&
                 !EQUAL(sUnits.c_str(), "1"))
             {
                 sKey += " (" + sUnits + ")";
             }
             // END UNIT READING BLOCK
 
-            data->papszMetadata = CSLSetNameValue(data->papszMetadata, sKey.c_str(), sValue.c_str());
+            data->papszMetadata = CSLSetNameValue(data->papszMetadata,
+                                                  sKey.c_str(), sValue.c_str());
         }
     }
 
-    if (hType >= 0) H5Tclose(hType);
-    if (hSpace >= 0) H5Sclose(hSpace);
-    if (hDset >= 0) H5Dclose(hDset);
+    if (hType >= 0)
+        H5Tclose(hType);
+    if (hSpace >= 0)
+        H5Sclose(hSpace);
+    if (hDset >= 0)
+        H5Dclose(hDset);
 
-    return 0; 
+    return 0;
 }
 
 void NisarDataset::InitializeMetadataMap()
 {
     // Only map if product type is known
-    if (!m_sInst.empty() && !m_sProductType.empty()) {
-        m_oMetadataMap["ATTITUDE"]     = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/attitude", "NISAR_ATTITUDE" };
-        m_oMetadataMap["CALIBRATIONINFORMATION"]  = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/calibrationInformation", "NISAR_CALIBRATIONINFORMATION" };
-        m_oMetadataMap["CEOSANALYSISREADYDATA"]     = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/ceosAnalysisReadyData", "NISAR_CEOSANALYSISREADYDATA" };
-        m_oMetadataMap["ORBIT"]        = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/orbit", "NISAR_ORBIT" };
-        m_oMetadataMap["PROCESSINGINFORMATION"]   = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/processingInformation", "NISAR_PROCESSINGINFORMATION" };
-        m_oMetadataMap["RADARGRID"]   = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/radarGrid", "NISAR_RADARGRID" };
-        m_oMetadataMap["SOURCEDATA"]       = { "/science/" + m_sInst + "/" + m_sProductType + "/metadata/sourceData", "NISAR_SOURCEDATA" };
+    if (!m_sInst.empty() && !m_sProductType.empty())
+    {
+        m_oMetadataMap["ATTITUDE"] = {"/science/" + m_sInst + "/" +
+                                          m_sProductType + "/metadata/attitude",
+                                      "NISAR_ATTITUDE"};
+        m_oMetadataMap["CALIBRATIONINFORMATION"] = {
+            "/science/" + m_sInst + "/" + m_sProductType +
+                "/metadata/calibrationInformation",
+            "NISAR_CALIBRATIONINFORMATION"};
+        m_oMetadataMap["CEOSANALYSISREADYDATA"] = {
+            "/science/" + m_sInst + "/" + m_sProductType +
+                "/metadata/ceosAnalysisReadyData",
+            "NISAR_CEOSANALYSISREADYDATA"};
+        m_oMetadataMap["ORBIT"] = {"/science/" + m_sInst + "/" +
+                                       m_sProductType + "/metadata/orbit",
+                                   "NISAR_ORBIT"};
+        m_oMetadataMap["PROCESSINGINFORMATION"] = {
+            "/science/" + m_sInst + "/" + m_sProductType +
+                "/metadata/processingInformation",
+            "NISAR_PROCESSINGINFORMATION"};
+        m_oMetadataMap["RADARGRID"] = {"/science/" + m_sInst + "/" +
+                                           m_sProductType +
+                                           "/metadata/radarGrid",
+                                       "NISAR_RADARGRID"};
+        m_oMetadataMap["SOURCEDATA"] = {"/science/" + m_sInst + "/" +
+                                            m_sProductType +
+                                            "/metadata/sourceData",
+                                        "NISAR_SOURCEDATA"};
     }
 }
 
-void NisarDataset::LoadMetadataDomain(const std::string& sKeyword)
+void NisarDataset::LoadMetadataDomain(const std::string &sKeyword)
 {
     auto it = m_oMetadataMap.find(sKeyword);
-    if (it == m_oMetadataMap.end()) {
-        CPLDebug("NISAR_DRIVER", "Requested metadata keyword '%s' not recognized.", sKeyword.c_str());
+    if (it == m_oMetadataMap.end())
+    {
+        CPLDebug("NISAR_DRIVER",
+                 "Requested metadata keyword '%s' not recognized.",
+                 sKeyword.c_str());
         return;
     }
 
-    const std::string& sH5Path = it->second.sHDF5Path;
-    const std::string& sDomain = it->second.sGDALDomain;
+    const std::string &sH5Path = it->second.sHDF5Path;
+    const std::string &sDomain = it->second.sGDALDomain;
 
     // Suppress errors temporarily in case the group doesn't exist
-    H5E_auto2_t old_func; void *old_client_data;
+    H5E_auto2_t old_func;
+    void *old_client_data;
     H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
     hid_t hGroup = H5Gopen2(hHDF5, sH5Path.c_str(), H5P_DEFAULT);
-    
-    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data); // Restore
 
-    if (hGroup < 0) {
-        CPLDebug("NISAR_DRIVER", "Metadata group not found: %s", sH5Path.c_str());
+    H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data);  // Restore
+
+    if (hGroup < 0)
+    {
+        CPLDebug("NISAR_DRIVER", "Metadata group not found: %s",
+                 sH5Path.c_str());
         return;
     }
 
-    CPLDebug("NISAR_DRIVER", "Loading metadata domain: %s from %s", sDomain.c_str(), sH5Path.c_str());
+    CPLDebug("NISAR_DRIVER", "Loading metadata domain: %s from %s",
+             sDomain.c_str(), sH5Path.c_str());
 
     NISAR_MetadataVisitData visitData;
     visitData.poDS = this;
     visitData.papszMetadata = nullptr;
 
     // Recursively visit all objects in this group
-    H5Ovisit(hGroup, H5_INDEX_NAME, H5_ITER_NATIVE, MetadataVisitCallback, &visitData, H5O_INFO_BASIC);
+    H5Ovisit(hGroup, H5_INDEX_NAME, H5_ITER_NATIVE, MetadataVisitCallback,
+             &visitData, H5O_INFO_BASIC);
 
     // Apply the gathered list to the dataset
-    if (visitData.papszMetadata) {
+    if (visitData.papszMetadata)
+    {
         SetMetadata(visitData.papszMetadata, sDomain.c_str());
         CSLDestroy(visitData.papszMetadata);
     }
@@ -2297,27 +2505,32 @@ void NisarDataset::LoadMetadataDomain(const std::string& sKeyword)
 
 struct NISAR_DumpVisitData
 {
-    NisarDataset *poDS;
-    std::string sRoot;      // absolute path of the traversal root
-    char **papszLines;      // CSL list of output lines
-    size_t nMaxElements;    // element cap for printed DATA blocks
-    size_t nMaxStringChars; // per-string cap for printed values
-    std::vector<std::string> aosOpenGroups; // groups whose '}' is still pending
-    std::map<std::string, std::string> oVisitedObjects; // object token -> first path
+    NisarDataset *poDS = nullptr;
+    std::string sRoot{};          // absolute path of the traversal root
+    char **papszLines = nullptr;  // CSL list of output lines
+    size_t nMaxElements = 0;      // element cap for printed DATA blocks
+    size_t nMaxStringChars = 0;   // per-string cap for printed values
+    std::vector<std::string> aosOpenGroups{};  // groups whose '}' is pending
+    std::map<std::string, std::string> oVisitedObjects{};  // token -> path
 };
 
 static std::string NisarDumpObjectKind(H5O_type_t eType)
 {
     switch (eType)
     {
-        case H5O_TYPE_GROUP:          return "GROUP";
-        case H5O_TYPE_DATASET:        return "DATASET";
-        case H5O_TYPE_NAMED_DATATYPE: return "DATATYPE";
-        default:                      return "OBJECT";
+        case H5O_TYPE_GROUP:
+            return "GROUP";
+        case H5O_TYPE_DATASET:
+            return "DATASET";
+        case H5O_TYPE_NAMED_DATATYPE:
+            return "DATATYPE";
+        default:
+            return "OBJECT";
     }
 }
 
-static bool NisarDumpIsUnder(const std::string &sParent, const std::string &sPath)
+static bool NisarDumpIsUnder(const std::string &sParent,
+                             const std::string &sPath)
 {
     if (sPath.size() <= sParent.size() ||
         sPath.compare(0, sParent.size(), sParent) != 0)
@@ -2328,10 +2541,12 @@ static bool NisarDumpIsUnder(const std::string &sParent, const std::string &sPat
 // Emits the closing brace of every open group that does not contain sPath
 // (H5Lvisit is pre-order, so leaving a subtree means moving to a sibling or
 // ancestor). An empty sPath closes everything.
-static void NisarDumpCloseGroups(NISAR_DumpVisitData *data, const std::string &sPath)
+static void NisarDumpCloseGroups(NISAR_DumpVisitData *data,
+                                 const std::string &sPath)
 {
-    while (!data->aosOpenGroups.empty() &&
-           (sPath.empty() || !NisarDumpIsUnder(data->aosOpenGroups.back(), sPath)))
+    while (
+        !data->aosOpenGroups.empty() &&
+        (sPath.empty() || !NisarDumpIsUnder(data->aosOpenGroups.back(), sPath)))
     {
         data->papszLines = CSLAddString(data->papszLines, "}");
         data->aosOpenGroups.pop_back();
@@ -2342,16 +2557,20 @@ static void NisarDumpCloseGroups(NISAR_DumpVisitData *data, const std::string &s
 // and for bytes that cannot start a sequence, which are passed through).
 static size_t NisarDumpUtf8SeqLen(unsigned char c)
 {
-    if (c >= 0xF0 && c <= 0xF7) return 4;
-    if (c >= 0xE0) return 3;
-    if (c >= 0xC0) return 2;
+    if (c >= 0xF0 && c <= 0xF7)
+        return 4;
+    if (c >= 0xE0)
+        return 3;
+    if (c >= 0xC0)
+        return 2;
     return 1;
 }
 
 static size_t NisarDumpUtf8Length(const std::string &s)
 {
     size_t nChars = 0;
-    for (size_t i = 0; i < s.size(); i += NisarDumpUtf8SeqLen(static_cast<unsigned char>(s[i])))
+    for (size_t i = 0; i < s.size();
+         i += NisarDumpUtf8SeqLen(static_cast<unsigned char>(s[i])))
         ++nChars;
     return nChars;
 }
@@ -2367,15 +2586,18 @@ static std::string NisarDumpQuote(const std::string &sIn, size_t nMax,
     size_t nUsed = 0;
     for (size_t i = 0; i < sIn.size();)
     {
-        const size_t nLen = NisarDumpUtf8SeqLen(static_cast<unsigned char>(sIn[i]));
+        const size_t nLen =
+            NisarDumpUtf8SeqLen(static_cast<unsigned char>(sIn[i]));
         if (nUsed++ >= nMax || i + nLen > sIn.size())
         {
             if (nStorageSize > 0)
-                sOut += CPLSPrintf("...\" (STRSIZE %llu)",
-                                   static_cast<unsigned long long>(nStorageSize));
+                sOut +=
+                    CPLSPrintf("...\" (STRSIZE %llu)",
+                               static_cast<unsigned long long>(nStorageSize));
             else
-                sOut += CPLSPrintf("...\" (%llu chars)",
-                                   static_cast<unsigned long long>(NisarDumpUtf8Length(sIn)));
+                sOut += CPLSPrintf(
+                    "...\" (%llu chars)",
+                    static_cast<unsigned long long>(NisarDumpUtf8Length(sIn)));
             return sOut;
         }
         if (nLen > 1)
@@ -2387,12 +2609,24 @@ static std::string NisarDumpQuote(const std::string &sIn, size_t nMax,
         const char c = sIn[i++];
         switch (c)
         {
-            case '\n': sOut += "\\n"; break;
-            case '\r': sOut += "\\r"; break;
-            case '\t': sOut += "\\t"; break;
-            case '"':  sOut += "\\\""; break;
-            case '\\': sOut += "\\\\"; break;
-            default:   sOut += c; break;
+            case '\n':
+                sOut += "\\n";
+                break;
+            case '\r':
+                sOut += "\\r";
+                break;
+            case '\t':
+                sOut += "\\t";
+                break;
+            case '"':
+                sOut += "\\\"";
+                break;
+            case '\\':
+                sOut += "\\\\";
+                break;
+            default:
+                sOut += c;
+                break;
         }
     }
     return sOut + "\"";
@@ -2414,8 +2648,8 @@ static std::string NisarDumpTypeString(hid_t hType)
                               (H5Tget_sign(hType) == H5T_SGN_NONE) ? 'U' : 'I',
                               static_cast<unsigned>(nSize * 8), pszOrder);
         case H5T_FLOAT:
-            return CPLSPrintf("H5T_IEEE_F%u%s", static_cast<unsigned>(nSize * 8),
-                              pszOrder);
+            return CPLSPrintf("H5T_IEEE_F%u%s",
+                              static_cast<unsigned>(nSize * 8), pszOrder);
         case H5T_STRING:
         {
             std::string s = "H5T_STRING { STRSIZE ";
@@ -2426,9 +2660,15 @@ static std::string NisarDumpTypeString(hid_t hType)
             s += "; STRPAD ";
             switch (H5Tget_strpad(hType))
             {
-                case H5T_STR_NULLPAD:  s += "H5T_STR_NULLPAD"; break;
-                case H5T_STR_SPACEPAD: s += "H5T_STR_SPACEPAD"; break;
-                default:               s += "H5T_STR_NULLTERM"; break;
+                case H5T_STR_NULLPAD:
+                    s += "H5T_STR_NULLPAD";
+                    break;
+                case H5T_STR_SPACEPAD:
+                    s += "H5T_STR_SPACEPAD";
+                    break;
+                default:
+                    s += "H5T_STR_NULLTERM";
+                    break;
             }
             s += "; CSET ";
             s += (H5Tget_cset(hType) == H5T_CSET_UTF8) ? "H5T_CSET_UTF8"
@@ -2450,7 +2690,8 @@ static std::string NisarDumpTypeString(hid_t hType)
                     H5Tclose(hMember);
                 }
                 s += CPLSPrintf(" \"%s\"; ", pszName ? pszName : "?");
-                if (pszName) H5free_memory(pszName);
+                if (pszName)
+                    H5free_memory(pszName);
             }
             return s + "}";
         }
@@ -2487,7 +2728,8 @@ static std::string NisarDumpTypeString(hid_t hType)
                 H5Tget_array_dims2(hType, adims);
                 s += "[ ";
                 for (int i = 0; i < nRank; ++i)
-                    s += CPLSPrintf("%llu%s", static_cast<unsigned long long>(adims[i]),
+                    s += CPLSPrintf("%llu%s",
+                                    static_cast<unsigned long long>(adims[i]),
                                     (i < nRank - 1) ? ", " : " ");
                 s += "] ";
             }
@@ -2498,11 +2740,14 @@ static std::string NisarDumpTypeString(hid_t hType)
             }
             return s + " }";
         }
-        case H5T_REFERENCE: return "H5T_REFERENCE";
-        case H5T_OPAQUE:    return CPLSPrintf("H5T_OPAQUE { %llu bytes }",
-                                              static_cast<unsigned long long>(nSize));
-        case H5T_BITFIELD:  return CPLSPrintf("H5T_STD_B%u%s",
-                                              static_cast<unsigned>(nSize * 8), pszOrder);
+        case H5T_REFERENCE:
+            return "H5T_REFERENCE";
+        case H5T_OPAQUE:
+            return CPLSPrintf("H5T_OPAQUE { %llu bytes }",
+                              static_cast<unsigned long long>(nSize));
+        case H5T_BITFIELD:
+            return CPLSPrintf("H5T_STD_B%u%s", static_cast<unsigned>(nSize * 8),
+                              pszOrder);
 #ifdef H5T_COMPLEX
         case H5T_COMPLEX:
         {
@@ -2524,21 +2769,26 @@ static std::string NisarDumpTypeString(hid_t hType)
 static std::string NisarDumpSpaceString(hid_t hSpace)
 {
     const H5S_class_t eClass = H5Sget_simple_extent_type(hSpace);
-    if (eClass == H5S_SCALAR) return "SCALAR";
-    if (eClass == H5S_NULL)   return "NULL";
+    if (eClass == H5S_SCALAR)
+        return "SCALAR";
+    if (eClass == H5S_NULL)
+        return "NULL";
     const int nRank = H5Sget_simple_extent_ndims(hSpace);
-    if (nRank <= 0 || nRank > H5S_MAX_RANK) return "SIMPLE { ? }";
+    if (nRank <= 0 || nRank > H5S_MAX_RANK)
+        return "SIMPLE { ? }";
     hsize_t adims[H5S_MAX_RANK], amax[H5S_MAX_RANK];
     H5Sget_simple_extent_dims(hSpace, adims, amax);
     std::string sCur = "( ", sMax = "( ";
     for (int i = 0; i < nRank; ++i)
     {
         const char *pszSep = (i < nRank - 1) ? ", " : " ";
-        sCur += CPLSPrintf("%llu%s", static_cast<unsigned long long>(adims[i]), pszSep);
+        sCur += CPLSPrintf("%llu%s", static_cast<unsigned long long>(adims[i]),
+                           pszSep);
         if (amax[i] == H5S_UNLIMITED)
             sMax += CPLSPrintf("H5S_UNLIMITED%s", pszSep);
         else
-            sMax += CPLSPrintf("%llu%s", static_cast<unsigned long long>(amax[i]), pszSep);
+            sMax += CPLSPrintf(
+                "%llu%s", static_cast<unsigned long long>(amax[i]), pszSep);
     }
     return "SIMPLE { " + sCur + ") / " + sMax + ") }";
 }
@@ -2557,16 +2807,23 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
 
     // A missing file->memory conversion path means the type is unsupported,
     // not that the read failed; only an actual H5Aread/H5Dread error is fatal.
-    auto Read = [&](hid_t hMemType, void *pBuf) -> bool {
+    auto Read = [&](hid_t hMemType, void *pBuf) -> bool
+    {
         H5T_cdata_t *psCData = nullptr;
-        if (H5Tfind(hType, hMemType, &psCData) == nullptr) return false;
-        const herr_t eErr =
-            bIsAttr ? H5Aread(hObj, hMemType, pBuf)
-                    : H5Dread(hObj, hMemType, H5S_ALL, H5S_ALL, H5P_DEFAULT, pBuf);
-        if (eErr < 0) bReadFailed = true;
+        if (H5Tfind(hType, hMemType, &psCData) == nullptr)
+            return false;
+        const herr_t eErr = bIsAttr ? H5Aread(hObj, hMemType, pBuf)
+                                    : H5Dread(hObj, hMemType, H5S_ALL, H5S_ALL,
+                                              H5P_DEFAULT, pBuf);
+        if (eErr < 0)
+            bReadFailed = true;
         return eErr >= 0;
     };
-    auto Join = [&](size_t i) { if (i > 0) sOut += ", "; };
+    auto Join = [&](size_t i)
+    {
+        if (i > 0)
+            sOut += ", ";
+    };
 
     if (eClass == H5T_STRING)
     {
@@ -2597,15 +2854,17 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
                 H5Dvlen_get_buf_size(hObj, hMem, hSpace, &nVlenBytes) >= 0 &&
                 nVlenBytes > nVlenCap)
             {
-                sOut = CPLSPrintf("(variable-length string, %llu bytes, not printed)",
-                                  static_cast<unsigned long long>(nVlenBytes));
+                sOut = CPLSPrintf(
+                    "(variable-length string, %llu bytes, not printed)",
+                    static_cast<unsigned long long>(nVlenBytes));
             }
             else if (Read(hMem, apsz.data()))
             {
                 for (size_t i = 0; i < nCount; ++i)
                 {
                     Join(i);
-                    sOut += NisarDumpQuote(apsz[i] ? apsz[i] : "", nMaxStringChars);
+                    sOut +=
+                        NisarDumpQuote(apsz[i] ? apsz[i] : "", nMaxStringChars);
                 }
                 H5Treclaim(hMem, hSpace, H5P_DEFAULT, apsz.data());
             }
@@ -2618,23 +2877,27 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
             // truncates on the fixed->fixed string conversion. UTF-8 code
             // points take up to 4 bytes, so size the read accordingly.
             const size_t nSize = H5Tget_size(hType);
-            const size_t nBytesPerChar = H5Tget_cset(hType) == H5T_CSET_UTF8 ? 4 : 1;
-            const size_t nMemSize = std::min(nSize, nMaxStringChars * nBytesPerChar + 1);
+            const size_t nBytesPerChar =
+                H5Tget_cset(hType) == H5T_CSET_UTF8 ? 4 : 1;
+            const size_t nMemSize =
+                std::min(nSize, nMaxStringChars * nBytesPerChar + 1);
             hid_t hMem = H5Tcopy(hType);
             std::vector<char> abyBuf(nCount * nMemSize + 1, '\0');
-            if (nMemSize > 0 && hMem >= 0 &&
-                H5Tset_size(hMem, nMemSize) >= 0 && Read(hMem, abyBuf.data()))
+            if (nMemSize > 0 && hMem >= 0 && H5Tset_size(hMem, nMemSize) >= 0 &&
+                Read(hMem, abyBuf.data()))
             {
                 for (size_t i = 0; i < nCount; ++i)
                 {
                     Join(i);
-                    std::string s(abyBuf.data() + i * nMemSize,
-                                  strnlen(abyBuf.data() + i * nMemSize, nMemSize));
+                    std::string s(
+                        abyBuf.data() + i * nMemSize,
+                        strnlen(abyBuf.data() + i * nMemSize, nMemSize));
                     sOut += NisarDumpQuote(s, nMaxStringChars,
                                            nMemSize < nSize ? nSize : 0);
                 }
             }
-            if (hMem >= 0) H5Tclose(hMem);
+            if (hMem >= 0)
+                H5Tclose(hMem);
         }
     }
     else if (eClass == H5T_INTEGER)
@@ -2643,20 +2906,32 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
         {
             std::vector<unsigned long long> a(nCount);
             if (Read(H5T_NATIVE_ULLONG, a.data()))
-                for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%llu", a[i]); }
+                for (size_t i = 0; i < nCount; ++i)
+                {
+                    Join(i);
+                    sOut += CPLSPrintf("%llu", a[i]);
+                }
         }
         else
         {
             std::vector<long long> a(nCount);
             if (Read(H5T_NATIVE_LLONG, a.data()))
-                for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%lld", a[i]); }
+                for (size_t i = 0; i < nCount; ++i)
+                {
+                    Join(i);
+                    sOut += CPLSPrintf("%lld", a[i]);
+                }
         }
     }
     else if (eClass == H5T_FLOAT)
     {
         std::vector<double> a(nCount);
         if (Read(H5T_NATIVE_DOUBLE, a.data()))
-            for (size_t i = 0; i < nCount; ++i) { Join(i); sOut += CPLSPrintf("%.17g", a[i]); }
+            for (size_t i = 0; i < nCount; ++i)
+            {
+                Join(i);
+                sOut += CPLSPrintf("%.17g", a[i]);
+            }
     }
     else
     {
@@ -2673,9 +2948,11 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
                 for (unsigned i = 0; i < 2; ++i)
                 {
                     char *pszMember = H5Tget_member_name(hType, i);
-                    H5Tinsert(hMem, pszMember ? pszMember : (i == 0 ? "r" : "i"),
+                    H5Tinsert(hMem,
+                              pszMember ? pszMember : (i == 0 ? "r" : "i"),
                               i * sizeof(double), H5T_NATIVE_DOUBLE);
-                    if (pszMember) H5free_memory(pszMember);
+                    if (pszMember)
+                        H5free_memory(pszMember);
                 }
             }
             else
@@ -2702,15 +2979,18 @@ static bool NisarDumpReadValues(hid_t hObj, bool bIsAttr, hid_t hType,
     return !bReadFailed;
 }
 
-static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrName,
-                                         const H5A_info_t * /*pAinfo*/, void *pOpData)
+static herr_t NisarDumpAttributeCallback(hid_t hLocation,
+                                         const char *pszAttrName,
+                                         const H5A_info_t * /*pAinfo*/,
+                                         void *pOpData)
 {
     NISAR_DumpVisitData *data = static_cast<NISAR_DumpVisitData *>(pOpData);
 
     hid_t hAttr = H5Aopen(hLocation, pszAttrName, H5P_DEFAULT);
     if (hAttr < 0)
     {
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Aopen('%s') failed; aborting traversal.",
+        CPLDebug("NISAR_DRIVER",
+                 "NISAR_DUMP: H5Aopen('%s') failed; aborting traversal.",
                  pszAttrName);
         return H5_ITER_ERROR;
     }
@@ -2718,8 +2998,8 @@ static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrNam
     hid_t hSpace = H5Aget_space(hAttr);
     bool bReadOk = true;
 
-    data->papszLines = CSLAddString(data->papszLines,
-                                    CPLSPrintf("   ATTRIBUTE \"%s\" {", pszAttrName));
+    data->papszLines = CSLAddString(
+        data->papszLines, CPLSPrintf("   ATTRIBUTE \"%s\" {", pszAttrName));
     if (hType >= 0)
         data->papszLines = CSLAddString(
             data->papszLines,
@@ -2742,9 +3022,9 @@ static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrNam
             else
             {
                 std::string sValues;
-                bReadOk = NisarDumpReadValues(
-                    hAttr, true, hType, hSpace, static_cast<size_t>(nPoints),
-                    data->nMaxStringChars, sValues);
+                bReadOk = NisarDumpReadValues(hAttr, true, hType, hSpace,
+                                              static_cast<size_t>(nPoints),
+                                              data->nMaxStringChars, sValues);
                 if (!sValues.empty())
                     data->papszLines = CSLAddString(
                         data->papszLines,
@@ -2754,12 +3034,15 @@ static herr_t NisarDumpAttributeCallback(hid_t hLocation, const char *pszAttrNam
     }
     data->papszLines = CSLAddString(data->papszLines, "   }");
 
-    if (hSpace >= 0) H5Sclose(hSpace);
-    if (hType >= 0) H5Tclose(hType);
+    if (hSpace >= 0)
+        H5Sclose(hSpace);
+    if (hType >= 0)
+        H5Tclose(hType);
     H5Aclose(hAttr);
     if (!bReadOk)
     {
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Aread('%s') failed; aborting traversal.",
+        CPLDebug("NISAR_DRIVER",
+                 "NISAR_DUMP: H5Aread('%s') failed; aborting traversal.",
                  pszAttrName);
         return H5_ITER_ERROR;
     }
@@ -2771,7 +3054,8 @@ static std::string NisarDumpJoinPath(const std::string &sRoot, const char *name)
     std::string sPath = sRoot;
     if (!EQUAL(name, "."))
     {
-        if (sPath.empty() || sPath.back() != '/') sPath += "/";
+        if (sPath.empty() || sPath.back() != '/')
+            sPath += "/";
         sPath += name;
     }
     return sPath;
@@ -2790,17 +3074,23 @@ herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
     if (info->type == H5L_TYPE_HARD)
     {
         H5O_info2_t oInfo;
-        if (H5Oget_info_by_name3(hRoot, name, &oInfo, H5O_INFO_BASIC, H5P_DEFAULT) < 0)
+        if (H5Oget_info_by_name3(hRoot, name, &oInfo, H5O_INFO_BASIC,
+                                 H5P_DEFAULT) < 0)
         {
-            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Oget_info('%s') failed; aborting traversal.",
-                     sPath.c_str());
+            CPLDebug(
+                "NISAR_DRIVER",
+                "NISAR_DUMP: H5Oget_info('%s') failed; aborting traversal.",
+                sPath.c_str());
             return H5_ITER_ERROR;
         }
         char *pszToken = nullptr;
-        if (H5Otoken_to_str(hRoot, &oInfo.token, &pszToken) < 0 || pszToken == nullptr)
+        if (H5Otoken_to_str(hRoot, &oInfo.token, &pszToken) < 0 ||
+            pszToken == nullptr)
         {
-            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Otoken_to_str('%s') failed; aborting traversal.",
-                     sPath.c_str());
+            CPLDebug(
+                "NISAR_DRIVER",
+                "NISAR_DUMP: H5Otoken_to_str('%s') failed; aborting traversal.",
+                sPath.c_str());
             return H5_ITER_ERROR;
         }
         const std::string sToken(pszToken);
@@ -2814,10 +3104,12 @@ herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
         }
         NisarDumpCloseGroups(data, sPath);
         data->papszLines = CSLAddString(
-            data->papszLines, CPLSPrintf("%s \"%s\" {", NisarDumpObjectKind(oInfo.type).c_str(),
-                                         sPath.c_str()));
-        data->papszLines = CSLAddString(
-            data->papszLines, CPLSPrintf("   HARDLINK \"%s\"", oSeen->second.c_str()));
+            data->papszLines,
+            CPLSPrintf("%s \"%s\" {", NisarDumpObjectKind(oInfo.type).c_str(),
+                       sPath.c_str()));
+        data->papszLines =
+            CSLAddString(data->papszLines, CPLSPrintf("   HARDLINK \"%s\"",
+                                                      oSeen->second.c_str()));
         data->papszLines = CSLAddString(data->papszLines, "}");
         return H5_ITER_CONT;
     }
@@ -2826,19 +3118,22 @@ herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
     if (info->type == H5L_TYPE_SOFT || info->type == H5L_TYPE_EXTERNAL)
     {
         std::vector<char> abyVal(info->u.val_size + 1, '\0');
-        if (info->u.val_size > 0 &&
-            H5Lget_val(hRoot, name, abyVal.data(), abyVal.size(), H5P_DEFAULT) < 0)
+        if (info->u.val_size > 0 && H5Lget_val(hRoot, name, abyVal.data(),
+                                               abyVal.size(), H5P_DEFAULT) < 0)
         {
-            CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Lget_val('%s') failed; aborting traversal.",
+            CPLDebug("NISAR_DRIVER",
+                     "NISAR_DUMP: H5Lget_val('%s') failed; aborting traversal.",
                      sPath.c_str());
             return H5_ITER_ERROR;
         }
         if (info->type == H5L_TYPE_SOFT)
         {
-            data->papszLines = CSLAddString(
-                data->papszLines, CPLSPrintf("SOFTLINK \"%s\" {", sPath.c_str()));
-            data->papszLines = CSLAddString(
-                data->papszLines, CPLSPrintf("   LINKTARGET \"%s\"", abyVal.data()));
+            data->papszLines =
+                CSLAddString(data->papszLines,
+                             CPLSPrintf("SOFTLINK \"%s\" {", sPath.c_str()));
+            data->papszLines =
+                CSLAddString(data->papszLines,
+                             CPLSPrintf("   LINKTARGET \"%s\"", abyVal.data()));
         }
         else
         {
@@ -2853,7 +3148,8 @@ herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
                 pszObj = "";
             }
             data->papszLines = CSLAddString(
-                data->papszLines, CPLSPrintf("EXTERNAL_LINK \"%s\" {", sPath.c_str()));
+                data->papszLines,
+                CPLSPrintf("EXTERNAL_LINK \"%s\" {", sPath.c_str()));
             data->papszLines = CSLAddString(
                 data->papszLines, CPLSPrintf("   TARGETFILE \"%s\"", pszFile));
             data->papszLines = CSLAddString(
@@ -2863,9 +3159,11 @@ herr_t NisarDataset::DumpLinkCallback(hid_t hRoot, const char *name,
     else
     {
         data->papszLines = CSLAddString(
-            data->papszLines, CPLSPrintf("USERDEFINED_LINK \"%s\" {", sPath.c_str()));
+            data->papszLines,
+            CPLSPrintf("USERDEFINED_LINK \"%s\" {", sPath.c_str()));
         data->papszLines = CSLAddString(
-            data->papszLines, CPLSPrintf("   LINKCLASS %d", static_cast<int>(info->type)));
+            data->papszLines,
+            CPLSPrintf("   LINKCLASS %d", static_cast<int>(info->type)));
     }
     data->papszLines = CSLAddString(data->papszLines, "}");
     return H5_ITER_CONT;
@@ -2880,7 +3178,8 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
     hid_t hObj = H5Oopen(hRoot, name, H5P_DEFAULT);
     if (hObj < 0)
     {
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Oopen('%s') failed; aborting traversal.",
+        CPLDebug("NISAR_DRIVER",
+                 "NISAR_DUMP: H5Oopen('%s') failed; aborting traversal.",
                  sPath.c_str());
         return H5_ITER_ERROR;
     }
@@ -2898,24 +3197,30 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
 
         case H5O_TYPE_DATASET:
         {
-            data->papszLines = CSLAddString(
-                data->papszLines, CPLSPrintf("DATASET \"%s\" {", sPath.c_str()));
+            data->papszLines =
+                CSLAddString(data->papszLines,
+                             CPLSPrintf("DATASET \"%s\" {", sPath.c_str()));
             hid_t hType = H5Dget_type(hObj);
             hid_t hSpace = H5Dget_space(hObj);
             if (hType >= 0)
             {
-                std::string sType = "   DATATYPE  " + NisarDumpTypeString(hType);
+                std::string sType =
+                    "   DATATYPE  " + NisarDumpTypeString(hType);
                 const H5T_class_t eCls = H5Tget_class(hType);
                 const GDALDataType eGDT =
-                    (eCls == H5T_INTEGER || eCls == H5T_FLOAT || eCls == H5T_COMPOUND
+                    (eCls == H5T_INTEGER || eCls == H5T_FLOAT ||
+                     eCls == H5T_COMPOUND
 #ifdef H5T_COMPLEX
                      || eCls == H5T_COMPLEX
 #endif
                      )
-                        ? GetGDALDataType(hType) : GDT_Unknown;
+                        ? GetGDALDataType(hType)
+                        : GDT_Unknown;
                 if (eGDT != GDT_Unknown)
-                    sType += CPLSPrintf("  (GDAL %s)", GDALGetDataTypeName(eGDT));
-                data->papszLines = CSLAddString(data->papszLines, sType.c_str());
+                    sType +=
+                        CPLSPrintf("  (GDAL %s)", GDALGetDataTypeName(eGDT));
+                data->papszLines =
+                    CSLAddString(data->papszLines, sType.c_str());
             }
             if (hSpace >= 0)
             {
@@ -2926,15 +3231,18 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
                 const int nRank = H5Sget_simple_extent_ndims(hSpace);
                 const hssize_t nPoints = H5Sget_simple_extent_npoints(hSpace);
                 if (data->poDS->m_bDumpFull && hType >= 0 && nRank <= 1 &&
-                    nPoints > 0 && static_cast<size_t>(nPoints) <= data->nMaxElements)
+                    nPoints > 0 &&
+                    static_cast<size_t>(nPoints) <= data->nMaxElements)
                 {
                     std::string sValues;
-                    bReadOk = NisarDumpReadValues(
-                        hObj, false, hType, hSpace, static_cast<size_t>(nPoints),
-                        data->nMaxStringChars, sValues);
+                    bReadOk =
+                        NisarDumpReadValues(hObj, false, hType, hSpace,
+                                            static_cast<size_t>(nPoints),
+                                            data->nMaxStringChars, sValues);
                     if (!sValues.empty())
                         data->papszLines = CSLAddString(
-                            data->papszLines, ("   DATA { " + sValues + " }").c_str());
+                            data->papszLines,
+                            ("   DATA { " + sValues + " }").c_str());
                 }
                 else if (data->poDS->m_bDumpFull && nPoints > 0)
                 {
@@ -2944,16 +3252,18 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
                                    static_cast<long long>(nPoints)));
                 }
             }
-            if (hSpace >= 0) H5Sclose(hSpace);
-            if (hType >= 0) H5Tclose(hType);
+            if (hSpace >= 0)
+                H5Sclose(hSpace);
+            if (hType >= 0)
+                H5Tclose(hType);
             break;
         }
 
         case H5O_TYPE_NAMED_DATATYPE:
-            data->papszLines = CSLAddString(
-                data->papszLines,
-                CPLSPrintf("DATATYPE \"%s\" { %s", sPath.c_str(),
-                           NisarDumpTypeString(hObj).c_str()));
+            data->papszLines =
+                CSLAddString(data->papszLines,
+                             CPLSPrintf("DATATYPE \"%s\" { %s", sPath.c_str(),
+                                        NisarDumpTypeString(hObj).c_str()));
             break;
 
         default:
@@ -2966,7 +3276,8 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
     {
         data->papszLines = CSLAddString(data->papszLines, "}");
         H5Oclose(hObj);
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: H5Dread('%s') failed; aborting traversal.",
+        CPLDebug("NISAR_DRIVER",
+                 "NISAR_DUMP: H5Dread('%s') failed; aborting traversal.",
                  sPath.c_str());
         return H5_ITER_ERROR;
     }
@@ -2984,7 +3295,9 @@ herr_t NisarDataset::DumpObject(hid_t hRoot, const char *name,
     H5Oclose(hObj);
     if (eAttr < 0)
     {
-        CPLDebug("NISAR_DRIVER", "NISAR_DUMP: attribute iteration on '%s' failed; aborting traversal.",
+        CPLDebug("NISAR_DRIVER",
+                 "NISAR_DUMP: attribute iteration on '%s' failed; aborting "
+                 "traversal.",
                  sPath.c_str());
         return H5_ITER_ERROR;
     }
@@ -2995,19 +3308,21 @@ bool NisarDataset::LoadDumpMetadata()
 {
     CSLDestroy(m_papszDumpMetadata);
     m_papszDumpMetadata = nullptr;
-    if (hHDF5 < 0) return false;
+    if (hHDF5 < 0)
+        return false;
     bool bOk = false;
 
     NISAR_DumpVisitData data;
     data.poDS = this;
     data.sRoot = m_sDumpRoot.empty() ? "/" : m_sDumpRoot;
     data.papszLines = nullptr;
-    data.nMaxElements = static_cast<size_t>(std::max(
-        0, atoi(CPLGetConfigOption("NISAR_DUMP_MAX_ELEMENTS", "64"))));
+    data.nMaxElements = static_cast<size_t>(
+        std::max(0, atoi(CPLGetConfigOption("NISAR_DUMP_MAX_ELEMENTS", "64"))));
     data.nMaxStringChars = static_cast<size_t>(std::max(
         0, atoi(CPLGetConfigOption("NISAR_DUMP_MAX_STRING_CHARS", "2048"))));
 
-    H5E_auto2_t old_func; void *old_client_data;
+    H5E_auto2_t old_func;
+    void *old_client_data;
     H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
@@ -3025,7 +3340,8 @@ bool NisarDataset::LoadDumpMetadata()
         if (eVisit >= 0)
         {
             char *pszToken = nullptr;
-            if (H5Otoken_to_str(hRoot, &oRootInfo.token, &pszToken) >= 0 && pszToken)
+            if (H5Otoken_to_str(hRoot, &oRootInfo.token, &pszToken) >= 0 &&
+                pszToken)
             {
                 data.oVisitedObjects[pszToken] = data.sRoot;
                 H5free_memory(pszToken);
@@ -3042,7 +3358,8 @@ bool NisarDataset::LoadDumpMetadata()
             data.papszLines = nullptr;
             CPLError(CE_Failure, CPLE_AppDefined,
                      "NISAR_DUMP: traversal of '%s' failed (I/O error?); "
-                     "no listing produced.", data.sRoot.c_str());
+                     "no listing produced.",
+                     data.sRoot.c_str());
         }
         else
         {
@@ -3076,24 +3393,28 @@ bool NisarDataset::LoadDumpMetadata()
 /* Creates raster bands (NisarRasterBand) for the dataset.             */
 /************************************************************************/
 GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
-{   
+{
     // ====================================================================
     // 3D INTERPOLATION ROUTING HOOK
     // Catch the QUANTITY option before any HDF5 or string parsing begins.
     // ====================================================================
     if (poOpenInfo->papszOpenOptions != nullptr &&
         CSLFetchNameValue(poOpenInfo->papszOpenOptions, "QUANTITY") != nullptr)
-    {       
-        if (CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DEM_FILE") == nullptr)
+    {
+        if (CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DEM_FILE") ==
+            nullptr)
         {
             CPLError(CE_Failure, CPLE_OpenFailed,
-                     "NISAR Driver: DEM_FILE open option is REQUIRED when QUANTITY is specified.");
+                     "NISAR Driver: DEM_FILE open option is REQUIRED when "
+                     "QUANTITY is specified.");
             return nullptr;
-        }   
-            
-        CPLDebug("NISAR_DRIVER", "QUANTITY option detected. Routing to NisarInterpolatedDataset.");
+        }
+
+        CPLDebug(
+            "NISAR_DRIVER",
+            "QUANTITY option detected. Routing to NisarInterpolatedDataset.");
         return NisarInterpolatedDataset::Open(poOpenInfo);
-    }       
+    }
 
     // ====================================================================
     // PATH PARSING
@@ -3104,46 +3425,65 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     const char *pszSubdatasetPath = nullptr;
     const char *pszPrefix = "NISAR:";
     size_t nPrefixLen = strlen(pszPrefix);
-        
-    if (EQUALN(pszFullInput, pszPrefix, nPrefixLen)) {               
+
+    const bool bHasPrefix = EQUALN(pszFullInput, pszPrefix, nPrefixLen);
+    if (bHasPrefix)
+    {
         pszDataIdentifier = pszFullInput + nPrefixLen;
-    } else {   
+    }
+    else
+    {
         pszDataIdentifier = pszFullInput;
-    }           
-                                                    
-    if (pszDataIdentifier == nullptr || pszDataIdentifier[0] == '\0') {
+    }
+
+    if (pszDataIdentifier == nullptr || pszDataIdentifier[0] == '\0')
+    {
         CPLError(CE_Failure, CPLE_OpenFailed, "Empty filename provided.");
         return nullptr;
     }
 
     const char *pszLastColon = strrchr(pszDataIdentifier, ':');
-    if (pszLastColon != nullptr && pszLastColon[1] == '/' && pszLastColon[2] == '/') {
+    if (pszLastColon != nullptr && pszLastColon[1] == '/' &&
+        pszLastColon[2] == '/')
+    {
         pszActualFilename = CPLStrdup(pszDataIdentifier);
         pszSubdatasetPath = nullptr;
-    } else if (pszLastColon != nullptr) {
+    }
+    else if (pszLastColon != nullptr)
+    {
         pszSubdatasetPath = pszLastColon + 1;
         size_t nFilenameLen = pszLastColon - pszDataIdentifier;
-        pszActualFilename = (char *)CPLMalloc(nFilenameLen + 1);
+        pszActualFilename = static_cast<char *>(CPLMalloc(nFilenameLen + 1));
         strncpy(pszActualFilename, pszDataIdentifier, nFilenameLen);
         pszActualFilename[nFilenameLen] = '\0';
-    } else {
+    }
+    else
+    {
         pszActualFilename = CPLStrdup(pszDataIdentifier);
         pszSubdatasetPath = nullptr;
     }
 
     size_t nActualLen = strlen(pszActualFilename);
-    if (nActualLen >= 2 && pszActualFilename[0] == '"' && pszActualFilename[nActualLen - 1] == '"') {
+    if (nActualLen >= 2 && pszActualFilename[0] == '"' &&
+        pszActualFilename[nActualLen - 1] == '"')
+    {
         memmove(pszActualFilename, pszActualFilename + 1, nActualLen - 2);
         pszActualFilename[nActualLen - 2] = '\0';
     }
 
-    if (!EQUAL(NisarGetExtension(pszActualFilename).c_str(), "h5")) {
+    // Mirror Identify(): an explicit NISAR: prefix claims the file whatever
+    // its extension; only unprefixed names are gated on .h5.
+    if (!bHasPrefix &&
+        !EQUAL(NisarGetExtension(pszActualFilename).c_str(), "h5"))
+    {
         CPLFree(pszActualFilename);
         return nullptr;
     }
 
-    if (poOpenInfo->eAccess == GA_Update) {
-        CPLError(CE_Failure, CPLE_NotSupported, "The NISAR driver only supports read access.");
+    if (poOpenInfo->eAccess == GA_Update)
+    {
+        CPLError(CE_Failure, CPLE_NotSupported,
+                 "The NISAR driver only supports read access.");
         CPLFree(pszActualFilename);
         return nullptr;
     }
@@ -3154,22 +3494,31 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     CPLString osNormalizedPath;
     bool bIsVSIL = false;
 
-    if (STARTS_WITH_CI(pszActualFilename, "s3://")) {
+    if (STARTS_WITH_CI(pszActualFilename, "s3://"))
+    {
         osNormalizedPath = "/vsis3/";
         osNormalizedPath += (pszActualFilename + 5);
         bIsVSIL = true;
-    } else if (STARTS_WITH_CI(pszActualFilename, "https://") || STARTS_WITH_CI(pszActualFilename, "http://")) {
+    }
+    else if (STARTS_WITH_CI(pszActualFilename, "https://") ||
+             STARTS_WITH_CI(pszActualFilename, "http://"))
+    {
         osNormalizedPath = "/vsicurl/";
         osNormalizedPath += pszActualFilename;
         bIsVSIL = true;
-    } else if (STARTS_WITH_CI(pszActualFilename, "/vsis3/") || STARTS_WITH_CI(pszActualFilename, "/vsicurl/")) {
+    }
+    else if (STARTS_WITH_CI(pszActualFilename, "/vsis3/") ||
+             STARTS_WITH_CI(pszActualFilename, "/vsicurl/"))
+    {
         osNormalizedPath = pszActualFilename;
         bIsVSIL = true;
-    } else {
+    }
+    else
+    {
         osNormalizedPath = pszActualFilename;
     }
 
-    const char* filenameForH5Fopen = osNormalizedPath.c_str();
+    const char *filenameForH5Fopen = osNormalizedPath.c_str();
 
     // ====================================================================
     // VIRTUAL FILE LAYER (VFL) ROUTING
@@ -3179,13 +3528,16 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
     if (bIsVSIL)
     {
-        CPLDebug("NISAR_DRIVER", "Remote cloud file detected. Routing HDF5 through GDAL VSIL VFL...");
-        
+        CPLDebug("NISAR_DRIVER", "Remote cloud file detected. Routing HDF5 "
+                                 "through GDAL VSIL VFL...");
+
         // Route HDF5 I/O directly into GDAL's /vsicurl/ layer!
         // This gives HDF5 the illusion of the full 4.8 GB file, while GDAL handles the HTTP Range GETs.
-        if (H5Pset_driver(fapl_id_base, NisarVFL::HDF5VFLGetFileDriver(), NULL) < 0)
+        if (H5Pset_driver(fapl_id_base, NisarVFL::HDF5VFLGetFileDriver(),
+                          NULL) < 0)
         {
-            CPLError(CE_Failure, CPLE_AppDefined, "Failed to configure GDAL VSIL VFD.");
+            CPLError(CE_Failure, CPLE_AppDefined,
+                     "Failed to configure GDAL VSIL VFD.");
             H5Pclose(fapl_id_base);
             CPLFree(pszActualFilename);
             return nullptr;
@@ -3195,10 +3547,14 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     // ====================================================================
     // PAGE BUFFERING (Hardcoded 4 MiB)
     // ====================================================================
-    size_t nPageBufferSize = 4 * 1024 * 1024; // 4 MiB
-    if (H5Pset_page_buffer_size(fapl_id_base, nPageBufferSize, 0, 0) < 0) {
-        CPLDebug("NISAR_DRIVER", "Warning: Failed to set HDF5 Page Buffer Size.");
-    } else {
+    size_t nPageBufferSize = 4 * 1024 * 1024;  // 4 MiB
+    if (H5Pset_page_buffer_size(fapl_id_base, nPageBufferSize, 0, 0) < 0)
+    {
+        CPLDebug("NISAR_DRIVER",
+                 "Warning: Failed to set HDF5 Page Buffer Size.");
+    }
+    else
+    {
         CPLDebug("NISAR_DRIVER", "Set HDF5 FAPL page buffer to 4 MiB.");
     }
 
@@ -3208,10 +3564,14 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     CPLDebug("NISAR_DRIVER", "Attempting H5Fopen with optimized FAPL.");
     hid_t hHDF5 = H5Fopen(filenameForH5Fopen, H5F_ACC_RDONLY, fapl_id_base);
 
-    if (bNeedToCloseFaplBase) H5Pclose(fapl_id_base);
+    if (bNeedToCloseFaplBase)
+        H5Pclose(fapl_id_base);
 
-    if (hHDF5 < 0) {
-        CPLError(CE_Failure, CPLE_OpenFailed, "H5Fopen failed for '%s'. Ensure metadata fits in 8MiB.", pszActualFilename);
+    if (hHDF5 < 0)
+    {
+        CPLError(CE_Failure, CPLE_OpenFailed,
+                 "H5Fopen failed for '%s'. Ensure metadata fits in 8MiB.",
+                 pszActualFilename);
         CPLFree(pszActualFilename);
         return nullptr;
     }
@@ -3220,23 +3580,29 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     // CREATE DATASET OBJECT
     // ====================================================================
     NisarDataset *poDS = nullptr;
-    try {
+    try
+    {
         poDS = new NisarDataset();
-    } catch (const std::bad_alloc &) {
-        CPLError(CE_Failure, CPLE_OutOfMemory, "Failed to allocate NisarDataset object.");
+    }
+    catch (const std::bad_alloc &)
+    {
+        CPLError(CE_Failure, CPLE_OutOfMemory,
+                 "Failed to allocate NisarDataset object.");
         H5Fclose(hHDF5);
         CPLFree(pszActualFilename);
         return nullptr;
     }
 
-    const char* pszMaskOpt = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "MASK");
-    if (pszMaskOpt && CPLTestBool(pszMaskOpt)) {
+    const char *pszMaskOpt =
+        CSLFetchNameValue(poOpenInfo->papszOpenOptions, "MASK");
+    if (pszMaskOpt && CPLTestBool(pszMaskOpt))
+    {
         poDS->m_bMaskEnabled = true;
     }
 
     poDS->hHDF5 = hHDF5;
     poDS->pszFilename = pszActualFilename;
-    pszActualFilename = nullptr; // Ownership transferred
+    pszActualFilename = nullptr;  // Ownership transferred
 
     poDS->SetDescription(poOpenInfo->pszFilename);
     poDS->ReadIdentificationMetadata();
@@ -3246,139 +3612,226 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     // ====================================================================
     // The NISAR_DUMP domain is always available on request (gdalinfo -mdd NISAR_DUMP);
     // DUMP=YES additionally advertises it in the domain list (gdalinfo -mdd all).
-    poDS->m_bDumpEnabled = CPLFetchBool(poOpenInfo->papszOpenOptions, "DUMP", false);
+    poDS->m_bDumpEnabled =
+        CPLFetchBool(poOpenInfo->papszOpenOptions, "DUMP", false);
     {
-        const char *pszDumpMode = CSLFetchNameValueDef(poOpenInfo->papszOpenOptions, "DUMP_MODE", "HEADER");
-        if (EQUAL(pszDumpMode, "FULL")) {
+        const char *pszDumpMode = CSLFetchNameValueDef(
+            poOpenInfo->papszOpenOptions, "DUMP_MODE", "HEADER");
+        if (EQUAL(pszDumpMode, "FULL"))
+        {
             poDS->m_bDumpFull = true;
-        } else if (!EQUAL(pszDumpMode, "HEADER")) {
-            CPLError(CE_Failure, CPLE_OpenFailed, "Invalid DUMP_MODE '%s' (expected HEADER or FULL).", pszDumpMode);
-            delete poDS; return nullptr;
+        }
+        else if (!EQUAL(pszDumpMode, "HEADER"))
+        {
+            CPLError(CE_Failure, CPLE_OpenFailed,
+                     "Invalid DUMP_MODE '%s' (expected HEADER or FULL).",
+                     pszDumpMode);
+            delete poDS;
+            return nullptr;
         }
 
-        const char *pszDumpRoot = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DUMP_ROOT");
+        const char *pszDumpRoot =
+            CSLFetchNameValue(poOpenInfo->papszOpenOptions, "DUMP_ROOT");
         const bool bExplicitRoot = pszDumpRoot != nullptr;
-        if (bExplicitRoot && pszDumpRoot[0] == '\0') {
-            CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT must name an HDF5 group (use / for the whole file).");
-            delete poDS; return nullptr;
+        if (bExplicitRoot && pszDumpRoot[0] == '\0')
+        {
+            CPLError(CE_Failure, CPLE_OpenFailed,
+                     "DUMP_ROOT must name an HDF5 group (use / for the whole "
+                     "file).");
+            delete poDS;
+            return nullptr;
         }
-        if (bExplicitRoot) {
+        if (bExplicitRoot)
+        {
             poDS->m_sDumpRoot = pszDumpRoot;
-        } else {
+        }
+        else
+        {
             // Instrument precedence: explicit raster path (/science/<INST>/...),
             // then INST, then the instrument detected from identification.
-            const char *pszInstOpt = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
+            const char *pszInstOpt =
+                CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
             std::string sInst = pszInstOpt ? pszInstOpt : poDS->m_sInst;
-            if (pszSubdatasetPath != nullptr && STARTS_WITH_CI(pszSubdatasetPath, "/science/")) {
-                const char *pszInstStart = pszSubdatasetPath + strlen("/science/");
+            if (pszSubdatasetPath != nullptr &&
+                STARTS_WITH_CI(pszSubdatasetPath, "/science/"))
+            {
+                const char *pszInstStart =
+                    pszSubdatasetPath + strlen("/science/");
                 const char *pszInstEnd = strchr(pszInstStart, '/');
-                const std::string sPathInst(pszInstStart, pszInstEnd ? pszInstEnd - pszInstStart : strlen(pszInstStart));
-                if (!sPathInst.empty()) sInst = sPathInst;
+                const std::string sPathInst(
+                    pszInstStart, pszInstEnd ? pszInstEnd - pszInstStart
+                                             : strlen(pszInstStart));
+                if (!sPathInst.empty())
+                    sInst = sPathInst;
             }
-            for (auto &c : sInst) c = toupper(c);
+            for (auto &c : sInst)
+                c = toupper(c);
             poDS->m_sDumpRoot = sInst.empty() ? "/" : "/science/" + sInst;
         }
-        if (poDS->m_sDumpRoot[0] != '/') poDS->m_sDumpRoot.insert(0, "/");
-        while (poDS->m_sDumpRoot.size() > 1 && poDS->m_sDumpRoot.back() == '/') poDS->m_sDumpRoot.pop_back();
+        if (poDS->m_sDumpRoot[0] != '/')
+            poDS->m_sDumpRoot.insert(0, "/");
+        while (poDS->m_sDumpRoot.size() > 1 && poDS->m_sDumpRoot.back() == '/')
+            poDS->m_sDumpRoot.pop_back();
 
-        if (poDS->m_sDumpRoot != "/" && (bExplicitRoot || poDS->m_bDumpEnabled)) {
-            H5E_auto2_t old_func_dump; void *old_client_data_dump;
+        if (poDS->m_sDumpRoot != "/" && (bExplicitRoot || poDS->m_bDumpEnabled))
+        {
+            H5E_auto2_t old_func_dump;
+            void *old_client_data_dump;
             H5Eget_auto2(H5E_DEFAULT, &old_func_dump, &old_client_data_dump);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
-            const hid_t hDumpRoot = H5Gopen2(poDS->hHDF5, poDS->m_sDumpRoot.c_str(), H5P_DEFAULT);
-            if (hDumpRoot >= 0) H5Gclose(hDumpRoot);
+            const hid_t hDumpRoot =
+                H5Gopen2(poDS->hHDF5, poDS->m_sDumpRoot.c_str(), H5P_DEFAULT);
+            if (hDumpRoot >= 0)
+                H5Gclose(hDumpRoot);
             H5Eset_auto2(H5E_DEFAULT, old_func_dump, old_client_data_dump);
-            if (hDumpRoot < 0) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "DUMP_ROOT '%s' is not an existing HDF5 group.", poDS->m_sDumpRoot.c_str());
-                delete poDS; return nullptr;
+            if (hDumpRoot < 0)
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "DUMP_ROOT '%s' is not an existing HDF5 group.",
+                         poDS->m_sDumpRoot.c_str());
+                delete poDS;
+                return nullptr;
             }
         }
         CPLDebug("NISAR_DRIVER", "NISAR_DUMP: root='%s' mode=%s advertised=%d",
-                 poDS->m_sDumpRoot.c_str(), poDS->m_bDumpFull ? "FULL" : "HEADER",
+                 poDS->m_sDumpRoot.c_str(),
+                 poDS->m_bDumpFull ? "FULL" : "HEADER",
                  poDS->m_bDumpEnabled ? 1 : 0);
     }
 
     const char *pathToOpen = nullptr;
     std::string sConstructedPath;
 
-    if (pszSubdatasetPath != nullptr) {
+    if (pszSubdatasetPath != nullptr)
+    {
         pathToOpen = pszSubdatasetPath;
-    } else {
-        const char *pszInst = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
-        const char *pszFreq = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "FREQ");
-        const char *pszPol = CSLFetchNameValue(poOpenInfo->papszOpenOptions, "POL");
+    }
+    else
+    {
+        const char *pszInst =
+            CSLFetchNameValue(poOpenInfo->papszOpenOptions, "INST");
+        const char *pszFreq =
+            CSLFetchNameValue(poOpenInfo->papszOpenOptions, "FREQ");
+        const char *pszPol =
+            CSLFetchNameValue(poOpenInfo->papszOpenOptions, "POL");
 
-        if (pszInst || pszFreq || pszPol) {
-            if (pszInst == nullptr) pszInst = "LSAR";
-            if (pszFreq == nullptr) pszFreq = "A";
+        if (pszInst || pszFreq || pszPol)
+        {
+            if (pszInst == nullptr)
+                pszInst = "LSAR";
+            if (pszFreq == nullptr)
+                pszFreq = "A";
 
-            if (!EQUAL(pszInst, "LSAR") && !EQUAL(pszInst, "SSAR")) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "Invalid INST open option.");
-                delete poDS; return nullptr;
+            if (!EQUAL(pszInst, "LSAR") && !EQUAL(pszInst, "SSAR"))
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "Invalid INST open option.");
+                delete poDS;
+                return nullptr;
             }
-            if (!EQUAL(pszFreq, "A") && !EQUAL(pszFreq, "B")) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "Invalid FREQ open option.");
-                delete poDS; return nullptr;
+            if (!EQUAL(pszFreq, "A") && !EQUAL(pszFreq, "B"))
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "Invalid FREQ open option.");
+                delete poDS;
+                return nullptr;
             }
-            if (poDS->m_sProductType.empty()) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "Could not determine NISAR product type.");
-                delete poDS; return nullptr;
+            if (poDS->m_sProductType.empty())
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "Could not determine NISAR product type.");
+                delete poDS;
+                return nullptr;
             }
 
-            std::string sInstUpper = pszInst; for(auto& c : sInstUpper) c = toupper(c);
-            std::string sFreqUpper = pszFreq; for(auto& c : sFreqUpper) c = toupper(c);
+            std::string sInstUpper = pszInst;
+            for (auto &c : sInstUpper)
+                c = toupper(c);
+            std::string sFreqUpper = pszFreq;
+            for (auto &c : sFreqUpper)
+                c = toupper(c);
 
-            std::string sMetadataGroupPath = "/science/" + sInstUpper + "/" + poDS->m_sProductType;
+            std::string sMetadataGroupPath =
+                "/science/" + sInstUpper + "/" + poDS->m_sProductType;
 
-            if (poDS->m_bIsLevel1) sMetadataGroupPath += "/swaths/frequency";
-            else if (poDS->m_bIsLevel2) sMetadataGroupPath += "/grids/frequency";
-            else if (poDS->m_bIsLevel3) sMetadataGroupPath += "/grids/radarData/frequency";
-            
+            if (poDS->m_bIsLevel1)
+                sMetadataGroupPath += "/swaths/frequency";
+            else if (poDS->m_bIsLevel2)
+                sMetadataGroupPath += "/grids/frequency";
+            else if (poDS->m_bIsLevel3)
+                sMetadataGroupPath += "/grids/radarData/frequency";
+
             sMetadataGroupPath += sFreqUpper;
 
             std::string sMetadataDatasetName;
             const bool bIsGCOV = EQUAL(poDS->m_sProductType.c_str(), "GCOV");
 
-            if (bIsGCOV) {
+            if (bIsGCOV)
+            {
                 sMetadataDatasetName = "listOfCovarianceTerms";
-                if (pszPol == nullptr) pszPol = "HHHH";
-            } else {
+                if (pszPol == nullptr)
+                    pszPol = "HHHH";
+            }
+            else
+            {
                 sMetadataDatasetName = "listOfPolarizations";
-                if (pszPol == nullptr) pszPol = "HH";
+                if (pszPol == nullptr)
+                    pszPol = "HH";
             }
 
-            std::string sPolUpper = pszPol; for(auto& c : sPolUpper) c = toupper(c);
+            std::string sPolUpper = pszPol;
+            for (auto &c : sPolUpper)
+                c = toupper(c);
             std::string sPolList;
-            
-            H5E_auto2_t old_func_md; void *old_client_data_md;
+
+            H5E_auto2_t old_func_md;
+            void *old_client_data_md;
             H5Eget_auto2(H5E_DEFAULT, &old_func_md, &old_client_data_md);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
-            hid_t hMetadataGroup = H5Gopen2(poDS->hHDF5, sMetadataGroupPath.c_str(), H5P_DEFAULT);
-            if (hMetadataGroup >= 0) {
-                sPolList = poDS->ReadHDF5StringDataset(hMetadataGroup, sMetadataDatasetName.c_str());
-                if (sPolList.empty()) {
-                    sPolList = poDS->ReadHDF5StringArrayAsList(hMetadataGroup, sMetadataDatasetName.c_str());
+            hid_t hMetadataGroup =
+                H5Gopen2(poDS->hHDF5, sMetadataGroupPath.c_str(), H5P_DEFAULT);
+            if (hMetadataGroup >= 0)
+            {
+                sPolList = poDS->ReadHDF5StringDataset(
+                    hMetadataGroup, sMetadataDatasetName.c_str());
+                if (sPolList.empty())
+                {
+                    sPolList = poDS->ReadHDF5StringArrayAsList(
+                        hMetadataGroup, sMetadataDatasetName.c_str());
                 }
                 H5Gclose(hMetadataGroup);
             }
             H5Eset_auto2(H5E_DEFAULT, old_func_md, old_client_data_md);
 
-            if (sPolList.empty()) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "Failed to read polarization list.");
-                delete poDS; return nullptr;
+            if (sPolList.empty())
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "Failed to read polarization list.");
+                delete poDS;
+                return nullptr;
             }
 
-            char **papszPolList = CSLTokenizeString2(sPolList.c_str(), ",", CSLT_STRIPLEADSPACES | CSLT_STRIPENDSPACES);
+            char **papszPolList =
+                CSLTokenizeString2(sPolList.c_str(), ",",
+                                   CSLT_STRIPLEADSPACES | CSLT_STRIPENDSPACES);
             bool bPolFound = false;
-            for (int i = 0; papszPolList && papszPolList[i] != nullptr; ++i) {
-                if (EQUAL(papszPolList[i], pszPol)) { bPolFound = true; break; }
+            for (int i = 0; papszPolList && papszPolList[i] != nullptr; ++i)
+            {
+                if (EQUAL(papszPolList[i], pszPol))
+                {
+                    bPolFound = true;
+                    break;
+                }
             }
             CSLDestroy(papszPolList);
 
-            if (!bPolFound) {
-                CPLError(CE_Failure, CPLE_OpenFailed, "Invalid POL open option: '%s'.", pszPol);
-                delete poDS; return nullptr;
+            if (!bPolFound)
+            {
+                CPLError(CE_Failure, CPLE_OpenFailed,
+                         "Invalid POL open option: '%s'.", pszPol);
+                delete poDS;
+                return nullptr;
             }
 
             poDS->m_sInst = pszInst;
@@ -3387,7 +3840,9 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
             sConstructedPath = sMetadataGroupPath + "/" + sPolUpper;
             pathToOpen = sConstructedPath.c_str();
-        } else {
+        }
+        else
+        {
             // Container dataset discovery
             poDS->hDataset = -1;
             NISARVisitorData visitor_data;
@@ -3396,79 +3851,121 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
             // Anchor the search to the specific instrument group
             std::string sScienceRoot = "/science/" + poDS->m_sInst;
-            hid_t hScienceGroup = H5Gopen2(poDS->hHDF5, sScienceRoot.c_str(), H5P_DEFAULT);
+            hid_t hScienceGroup =
+                H5Gopen2(poDS->hHDF5, sScienceRoot.c_str(), H5P_DEFAULT);
 
-            if (hScienceGroup >= 0) {
-                visitor_data.hStartingGroupID = hScienceGroup; // Use the anchored group handle
-                visitor_data.sBasePath = sScienceRoot + "/";             // Store the absolute prefix
+            if (hScienceGroup >= 0)
+            {
+                visitor_data.hStartingGroupID =
+                    hScienceGroup;  // Use the anchored group handle
+                visitor_data.sBasePath =
+                    sScienceRoot + "/";  // Store the absolute prefix
 
-                H5Ovisit(hScienceGroup, H5_INDEX_NAME, H5_ITER_NATIVE, NISAR_FindDatasetsVisitor, (void *)&visitor_data, H5O_INFO_BASIC);
+                H5Ovisit(hScienceGroup, H5_INDEX_NAME, H5_ITER_NATIVE,
+                         NISAR_FindDatasetsVisitor, &visitor_data,
+                         H5O_INFO_BASIC);
 
                 H5Gclose(hScienceGroup);
-
             }
 
-            if (!found_paths_vector.empty()) {
+            if (!found_paths_vector.empty())
+            {
                 char **papszMetadataList = nullptr;
                 int nSubdatasets = 0;
 
-                for (const std::string &hdf5_path : found_paths_vector) {
-                    hid_t hSubDataset = H5Dopen2(poDS->hHDF5, hdf5_path.c_str(), H5P_DEFAULT);
-                    if (hSubDataset < 0) continue;
+                for (const std::string &hdf5_path : found_paths_vector)
+                {
+                    hid_t hSubDataset =
+                        H5Dopen2(poDS->hHDF5, hdf5_path.c_str(), H5P_DEFAULT);
+                    if (hSubDataset < 0)
+                        continue;
 
                     hid_t hSubType = H5Dget_type(hSubDataset);
-                    if (hSubType >= 0 && H5Tget_class(hSubType) == H5T_STRING) {
-                        H5Tclose(hSubType); H5Dclose(hSubDataset); continue;
+                    if (hSubType >= 0 && H5Tget_class(hSubType) == H5T_STRING)
+                    {
+                        H5Tclose(hSubType);
+                        H5Dclose(hSubDataset);
+                        continue;
                     }
 
                     nSubdatasets++;
-                    std::string name_key = CPLSPrintf("SUBDATASET_%d_NAME", nSubdatasets);
-                    std::string name_val = std::string(pszPrefix) + "\"" + poDS->pszFilename + "\":" + hdf5_path;
-                    papszMetadataList = CSLSetNameValue(papszMetadataList, name_key.c_str(), name_val.c_str());
+                    std::string name_key =
+                        CPLSPrintf("SUBDATASET_%d_NAME", nSubdatasets);
+                    std::string name_val = std::string(pszPrefix) + "\"" +
+                                           poDS->pszFilename +
+                                           "\":" + hdf5_path;
+                    papszMetadataList = CSLSetNameValue(
+                        papszMetadataList, name_key.c_str(), name_val.c_str());
 
-                    std::string desc_key = CPLSPrintf("SUBDATASET_%d_DESC", nSubdatasets);
+                    std::string desc_key =
+                        CPLSPrintf("SUBDATASET_%d_DESC", nSubdatasets);
                     std::string desc_val = "[";
                     hid_t hSubSpace = H5Dget_space(hSubDataset);
-                    int nSubDim = (hSubSpace >= 0) ? H5Sget_simple_extent_ndims(hSubSpace) : -1;
+                    int nSubDim = (hSubSpace >= 0)
+                                      ? H5Sget_simple_extent_ndims(hSubSpace)
+                                      : -1;
 
-                    if (nSubDim > 0) {
+                    if (nSubDim > 0)
+                    {
                         hsize_t adimsSub[H5S_MAX_RANK];
                         H5Sget_simple_extent_dims(hSubSpace, adimsSub, nullptr);
-                        for (int i = 0; i < nSubDim; ++i) {
-                            desc_val += CPLSPrintf("%llu%s", (unsigned long long)adimsSub[i], (i < nSubDim - 1) ? "x" : "");
+                        for (int i = 0; i < nSubDim; ++i)
+                        {
+                            desc_val += CPLSPrintf(
+                                "%llu%s",
+                                static_cast<unsigned long long>(adimsSub[i]),
+                                (i < nSubDim - 1) ? "x" : "");
                         }
-                    } else if (nSubDim == 0) {
+                    }
+                    else if (nSubDim == 0)
+                    {
                         desc_val += "scalar";
-                    } else {
+                    }
+                    else
+                    {
                         desc_val += "?";
                     }
                     desc_val += "]";
 
-                    GDALDataType eSubDataType = (hSubType >= 0) ? NisarDataset::GetGDALDataType(hSubType) : GDT_Unknown;
+                    GDALDataType eSubDataType =
+                        (hSubType >= 0)
+                            ? NisarDataset::GetGDALDataType(hSubType)
+                            : GDT_Unknown;
                     std::string sDataTypeDesc = "(unknown)";
-                    if (eSubDataType != GDT_Unknown) {
+                    if (eSubDataType != GDT_Unknown)
+                    {
                         sDataTypeDesc = "(";
-                        if (GDALDataTypeIsComplex(eSubDataType)) sDataTypeDesc += "complex, ";
-                        sDataTypeDesc += GDALGetDataTypeName(GDALGetNonComplexDataType(eSubDataType));
+                        if (GDALDataTypeIsComplex(eSubDataType))
+                            sDataTypeDesc += "complex, ";
+                        sDataTypeDesc += GDALGetDataTypeName(
+                            GDALGetNonComplexDataType(eSubDataType));
                         sDataTypeDesc += ")";
                     }
                     desc_val += " " + hdf5_path + " " + sDataTypeDesc;
-                    papszMetadataList = CSLSetNameValue(papszMetadataList, desc_key.c_str(), desc_val.c_str());
+                    papszMetadataList = CSLSetNameValue(
+                        papszMetadataList, desc_key.c_str(), desc_val.c_str());
 
-                    if (hSubType >= 0) H5Tclose(hSubType);
-                    if (hSubSpace >= 0) H5Sclose(hSubSpace);
+                    if (hSubType >= 0)
+                        H5Tclose(hSubType);
+                    if (hSubSpace >= 0)
+                        H5Sclose(hSubSpace);
                     H5Dclose(hSubDataset);
                 }
 
                 CSLDestroy(poDS->papszSubDatasets);
                 poDS->papszSubDatasets = papszMetadataList;
                 poDS->SetMetadata(poDS->papszSubDatasets, "SUBDATASETS");
-                poDS->nRasterXSize = 0; poDS->nRasterYSize = 0; poDS->nBands = 0;
+                poDS->nRasterXSize = 0;
+                poDS->nRasterYSize = 0;
+                poDS->nBands = 0;
                 poDS->TryLoadXML();
                 poDS->SetDescription(poOpenInfo->pszFilename);
                 return poDS;
-            } else {
-                delete poDS; return nullptr;
+            }
+            else
+            {
+                delete poDS;
+                return nullptr;
             }
         }
     }
@@ -3479,116 +3976,167 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
     hid_t dapl_id = H5Pcreate(H5P_DATASET_ACCESS);
     bool bNeedToCloseDapl = (dapl_id >= 0);
 
-    if (dapl_id >= 0) {
-        // Since IReadBlock bypasses HDF5 pixel reads entirely, this cache is 
+    if (dapl_id >= 0)
+    {
+        // Since IReadBlock bypasses HDF5 pixel reads entirely, this cache is
         // essentially a safety net for any incidental chunk scans.
-        size_t nCacheSlots = 521; // Prime number of slots for 512x512 tiles
-        size_t nCacheSizeBytes = 8 * 1024 * 1024; // 8 MiB dataset cache
+        size_t nCacheSlots = 521;  // Prime number of slots for 512x512 tiles
+        size_t nCacheSizeBytes = 8 * 1024 * 1024;  // 8 MiB dataset cache
         H5Pset_chunk_cache(dapl_id, nCacheSlots, nCacheSizeBytes, 0.75);
     }
 
-    H5E_auto2_t old_func_exists; void *old_client_data_exists;
+    H5E_auto2_t old_func_exists;
+    void *old_client_data_exists;
     H5Eget_auto2(H5E_DEFAULT, &old_func_exists, &old_client_data_exists);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     htri_t bExists = H5Lexists(poDS->hHDF5, pathToOpen, H5P_DEFAULT);
     H5Eset_auto2(H5E_DEFAULT, old_func_exists, old_client_data_exists);
 
-    if (bExists <= 0) {
-        CPLError(CE_Failure, CPLE_OpenFailed, "The HDF5 dataset '%s' does not exist.", pathToOpen);
-        if (bNeedToCloseDapl) H5Pclose(dapl_id);
-        delete poDS; return nullptr;
+    if (bExists <= 0)
+    {
+        CPLError(CE_Failure, CPLE_OpenFailed,
+                 "The HDF5 dataset '%s' does not exist.", pathToOpen);
+        if (bNeedToCloseDapl)
+            H5Pclose(dapl_id);
+        delete poDS;
+        return nullptr;
     }
 
     poDS->hDataset = H5Dopen2(poDS->hHDF5, pathToOpen, dapl_id);
-    if (bNeedToCloseDapl) H5Pclose(dapl_id);
+    if (bNeedToCloseDapl)
+        H5Pclose(dapl_id);
 
-    if (poDS->hDataset < 0) {
-        CPLError(CE_Failure, CPLE_OpenFailed, "H5Dopen2 failed for dataset '%s'.", pathToOpen);
-        delete poDS; return nullptr;
+    if (poDS->hDataset < 0)
+    {
+        CPLError(CE_Failure, CPLE_OpenFailed,
+                 "H5Dopen2 failed for dataset '%s'.", pathToOpen);
+        delete poDS;
+        return nullptr;
     }
 
     // Map Data Types & Dimensions
     hid_t hH5DataType = H5Dget_type(poDS->hDataset);
-    if (hH5DataType < 0) {
-        delete poDS; return nullptr;
+    if (hH5DataType < 0)
+    {
+        delete poDS;
+        return nullptr;
     }
     poDS->eDataType = NisarDataset::GetGDALDataType(hH5DataType);
     H5Tclose(hH5DataType);
 
-    if (poDS->eDataType == GDT_Unknown) {
+    if (poDS->eDataType == GDT_Unknown)
+    {
         CPLError(CE_Failure, CPLE_AppDefined, "Unsupported HDF5 data type.");
-        delete poDS; return nullptr;
+        delete poDS;
+        return nullptr;
     }
 
     hid_t hDataspace = H5Dget_space(poDS->hDataset);
-    if (hDataspace < 0) {
-        delete poDS; return nullptr;
+    if (hDataspace < 0)
+    {
+        delete poDS;
+        return nullptr;
     }
     const int nDims = H5Sget_simple_extent_ndims(hDataspace);
 
-    if (nDims < 2) {
+    if (nDims < 2)
+    {
         CPLError(CE_Failure, CPLE_AppDefined, "Dataset requires rank >= 2.");
-        H5Sclose(hDataspace); delete poDS; return nullptr;
+        H5Sclose(hDataspace);
+        delete poDS;
+        return nullptr;
     }
 
     hsize_t adims[H5S_MAX_RANK];
     H5Sget_simple_extent_dims(hDataspace, adims, nullptr);
 
     int nBandsToCreate = 1;
-    if (nDims == 3) {
+    if (nDims == 3)
+    {
         nBandsToCreate = static_cast<int>(adims[0]);
         poDS->nRasterYSize = static_cast<int>(adims[1]);
         poDS->nRasterXSize = static_cast<int>(adims[2]);
-    } else if (nDims == 2) {
+    }
+    else if (nDims == 2)
+    {
         poDS->nRasterYSize = static_cast<int>(adims[0]);
         poDS->nRasterXSize = static_cast<int>(adims[1]);
-    } else {
+    }
+    else
+    {
         poDS->nRasterYSize = static_cast<int>(adims[nDims - 2]);
         poDS->nRasterXSize = static_cast<int>(adims[nDims - 1]);
     }
     H5Sclose(hDataspace);
 
-    if (poDS->nRasterXSize <= 0 || poDS->nRasterYSize <= 0) {
-        delete poDS; return nullptr;
+    if (poDS->nRasterXSize <= 0 || poDS->nRasterYSize <= 0)
+    {
+        delete poDS;
+        return nullptr;
     }
 
     double dfNoData = 0.0;
     bool bHasNoData = false;
-    H5E_auto2_t old_func_fill; void *old_client_data_fill;
+    H5E_auto2_t old_func_fill;
+    void *old_client_data_fill;
     H5Eget_auto2(H5E_DEFAULT, &old_func_fill, &old_client_data_fill);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     hid_t hFillAttr = H5Aopen(poDS->hDataset, "_FillValue", H5P_DEFAULT);
-    if (hFillAttr >= 0) {
-        if (H5Aread(hFillAttr, H5T_NATIVE_DOUBLE, &dfNoData) >= 0) bHasNoData = true;
+    if (hFillAttr >= 0)
+    {
+        if (H5Aread(hFillAttr, H5T_NATIVE_DOUBLE, &dfNoData) >= 0)
+            bHasNoData = true;
         H5Aclose(hFillAttr);
     }
     H5Eset_auto2(H5E_DEFAULT, old_func_fill, old_client_data_fill);
 
-    for (int i = 0; i < nBandsToCreate; i++) {
-        NisarRasterBand* poBand = new NisarRasterBand(poDS, i + 1);
+    for (int i = 0; i < nBandsToCreate; i++)
+    {
+        NisarRasterBand *poBand = new NisarRasterBand(poDS, i + 1);
+        if (!poBand->IsValid())
+        {
+            delete poBand;
+            delete poDS;
+            return nullptr;
+        }
         poDS->SetBand(i + 1, poBand);
-        if (bHasNoData) poBand->SetNoDataValue(dfNoData);
+        if (bHasNoData)
+            poBand->SetNoDataValue(dfNoData);
     }
 
-    if (nDims == 3 && poDS->hDataset >= 0) {
+    if (nDims == 3 && poDS->hDataset >= 0)
+    {
         std::string sCurrentPath = pathToOpen;
         size_t nLastSlash = sCurrentPath.find_last_of('/');
-        if (nLastSlash != std::string::npos) {
-            std::string sZAxisPath = sCurrentPath.substr(0, nLastSlash) + "/heightAboveEllipsoid";
+        if (nLastSlash != std::string::npos)
+        {
+            std::string sZAxisPath =
+                sCurrentPath.substr(0, nLastSlash) + "/heightAboveEllipsoid";
             H5Eget_auto2(H5E_DEFAULT, &old_func_fill, &old_client_data_fill);
             H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
-            htri_t bHasHeight = H5Lexists(poDS->hHDF5, sZAxisPath.c_str(), H5P_DEFAULT);
+            htri_t bHasHeight =
+                H5Lexists(poDS->hHDF5, sZAxisPath.c_str(), H5P_DEFAULT);
             H5Eset_auto2(H5E_DEFAULT, old_func_fill, old_client_data_fill);
 
-            if (bHasHeight > 0) {
+            if (bHasHeight > 0)
+            {
                 std::vector<double> adfHeights;
-                if (Read1DDoubleVec(poDS->hHDF5, sZAxisPath.c_str(), adfHeights) && adfHeights.size() == static_cast<size_t>(nBandsToCreate)) {
-                    for (int i = 0; i < nBandsToCreate; i++) {
+                if (Read1DDoubleVec(poDS->hHDF5, sZAxisPath.c_str(),
+                                    adfHeights) &&
+                    adfHeights.size() == static_cast<size_t>(nBandsToCreate))
+                {
+                    for (int i = 0; i < nBandsToCreate; i++)
+                    {
                         GDALRasterBand *poBand = poDS->GetRasterBand(i + 1);
-                        if (poBand) {
-                            poBand->SetDescription(CPLSPrintf("Height: %.1f m", adfHeights[i]));
-                            poBand->SetMetadataItem("HEIGHT_METERS", CPLSPrintf("%.1f", adfHeights[i]));
-                            poBand->SetMetadataItem("Z_VALUE", CPLSPrintf("%.1f", adfHeights[i]));
+                        if (poBand)
+                        {
+                            poBand->SetDescription(
+                                CPLSPrintf("Height: %.1f m", adfHeights[i]));
+                            poBand->SetMetadataItem(
+                                "HEIGHT_METERS",
+                                CPLSPrintf("%.1f", adfHeights[i]));
+                            poBand->SetMetadataItem(
+                                "Z_VALUE", CPLSPrintf("%.1f", adfHeights[i]));
                         }
                     }
                 }
@@ -3596,54 +4144,107 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
         }
     }
 
-    if (poDS->m_bIsLevel1) {
-        poDS->GenerateGCPsFromGeolocationGrid(poDS->m_sProductType.c_str(), pathToOpen);
+    if (poDS->m_bIsLevel1)
+    {
+        poDS->GenerateGCPsFromGeolocationGrid(poDS->m_sProductType.c_str(),
+                                              pathToOpen);
     }
 
-    if (poDS->nBands == 0) {
+    if (poDS->nBands == 0)
+    {
         poDS->nBands = 1;
-        poDS->SetBand(1, new NisarRasterBand(poDS, 1));
+        NisarRasterBand *poBand = new NisarRasterBand(poDS, 1);
+        if (!poBand->IsValid())
+        {
+            delete poBand;
+            delete poDS;
+            return nullptr;
+        }
+        poDS->SetBand(1, poBand);
     }
 
     //poDS->SetDescription(poOpenInfo->pszFilename);
-    if (pathToOpen) poDS->SetMetadataItem("HDF5_PATH", pathToOpen);
+    if (pathToOpen)
+        poDS->SetMetadataItem("HDF5_PATH", pathToOpen);
 
-    if (poDS->hDataset >= 0) {
-        std::string sTargetString = std::string("NISAR:") + poDS->pszFilename + ":" + pathToOpen;
+    if (poDS->hDataset >= 0)
+    {
+        std::string sTargetString =
+            std::string("NISAR:") + poDS->pszFilename + ":" + pathToOpen;
         bool bIsComplex = GDALDataTypeIsComplex(poDS->eDataType);
-        bool bIsNumeric = (poDS->eDataType > GDT_Unknown && poDS->eDataType < GDT_CInt16);
+        bool bIsNumeric =
+            (poDS->eDataType > GDT_Unknown && poDS->eDataType < GDT_CInt16);
 
-        if (bIsComplex) {
-            poDS->SetMetadataItem("AMPLITUDE", CPLSPrintf("DERIVED_SUBDATASET:AMPLITUDE:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
-            poDS->SetMetadataItem("PHASE", CPLSPrintf("DERIVED_SUBDATASET:PHASE:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
-            poDS->SetMetadataItem("REAL", CPLSPrintf("DERIVED_SUBDATASET:REAL:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
-            poDS->SetMetadataItem("IMAG", CPLSPrintf("DERIVED_SUBDATASET:IMAG:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
-            poDS->SetMetadataItem("INTENSITY", CPLSPrintf("DERIVED_SUBDATASET:INTENSITY:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
-            poDS->SetMetadataItem("CONJ", CPLSPrintf("DERIVED_SUBDATASET:CONJ:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
+        if (bIsComplex)
+        {
+            poDS->SetMetadataItem(
+                "AMPLITUDE",
+                CPLSPrintf("DERIVED_SUBDATASET:AMPLITUDE:\"%s\"",
+                           sTargetString.c_str()),
+                "DERIVED_SUBDATASETS");
+            poDS->SetMetadataItem("PHASE",
+                                  CPLSPrintf("DERIVED_SUBDATASET:PHASE:\"%s\"",
+                                             sTargetString.c_str()),
+                                  "DERIVED_SUBDATASETS");
+            poDS->SetMetadataItem("REAL",
+                                  CPLSPrintf("DERIVED_SUBDATASET:REAL:\"%s\"",
+                                             sTargetString.c_str()),
+                                  "DERIVED_SUBDATASETS");
+            poDS->SetMetadataItem("IMAG",
+                                  CPLSPrintf("DERIVED_SUBDATASET:IMAG:\"%s\"",
+                                             sTargetString.c_str()),
+                                  "DERIVED_SUBDATASETS");
+            poDS->SetMetadataItem(
+                "INTENSITY",
+                CPLSPrintf("DERIVED_SUBDATASET:INTENSITY:\"%s\"",
+                           sTargetString.c_str()),
+                "DERIVED_SUBDATASETS");
+            poDS->SetMetadataItem("CONJ",
+                                  CPLSPrintf("DERIVED_SUBDATASET:CONJ:\"%s\"",
+                                             sTargetString.c_str()),
+                                  "DERIVED_SUBDATASETS");
         }
-        if (bIsNumeric) {
-            poDS->SetMetadataItem("LOGAMPLITUDE", CPLSPrintf("DERIVED_SUBDATASET:LOGAMPLITUDE:\"%s\"", sTargetString.c_str()), "DERIVED_SUBDATASETS");
+        if (bIsNumeric)
+        {
+            poDS->SetMetadataItem(
+                "LOGAMPLITUDE",
+                CPLSPrintf("DERIVED_SUBDATASET:LOGAMPLITUDE:\"%s\"",
+                           sTargetString.c_str()),
+                "DERIVED_SUBDATASETS");
         }
     }
 
     bool bIsMask = false;
-    if (pathToOpen && std::string(pathToOpen).find("/mask") != std::string::npos) bIsMask = true;
-    if (!bIsMask) {
-        const char* pszH5Path = poDS->GetMetadataItem("HDF5_PATH");
-        if (pszH5Path && std::string(pszH5Path).find("/mask") != std::string::npos) bIsMask = true;
+    if (pathToOpen &&
+        std::string(pathToOpen).find("/mask") != std::string::npos)
+        bIsMask = true;
+    if (!bIsMask)
+    {
+        const char *pszH5Path = poDS->GetMetadataItem("HDF5_PATH");
+        if (pszH5Path &&
+            std::string(pszH5Path).find("/mask") != std::string::npos)
+            bIsMask = true;
     }
 
-    if (bIsMask) {
-        GDALRasterBand* poBand = poDS->GetRasterBand(1);
-        if (poBand) {
+    if (bIsMask)
+    {
+        GDALRasterBand *poBand = poDS->GetRasterBand(1);
+        if (poBand)
+        {
             poBand->SetNoDataValue(255.0);
-            char** papszCategories = nullptr;
-            papszCategories = CSLAddString(papszCategories, "Invalid or partially focused");
-            papszCategories = CSLAddString(papszCategories, "Valid (Sub-swath 1)");
-            papszCategories = CSLAddString(papszCategories, "Valid (Sub-swath 2)");
-            papszCategories = CSLAddString(papszCategories, "Valid (Sub-swath 3)");
-            papszCategories = CSLAddString(papszCategories, "Valid (Sub-swath 4)");
-            papszCategories = CSLAddString(papszCategories, "Valid (Sub-swath 5)");
+            char **papszCategories = nullptr;
+            papszCategories =
+                CSLAddString(papszCategories, "Invalid or partially focused");
+            papszCategories =
+                CSLAddString(papszCategories, "Valid (Sub-swath 1)");
+            papszCategories =
+                CSLAddString(papszCategories, "Valid (Sub-swath 2)");
+            papszCategories =
+                CSLAddString(papszCategories, "Valid (Sub-swath 3)");
+            papszCategories =
+                CSLAddString(papszCategories, "Valid (Sub-swath 4)");
+            papszCategories =
+                CSLAddString(papszCategories, "Valid (Sub-swath 5)");
             poBand->SetCategoryNames(papszCategories);
             CSLDestroy(papszCategories);
             poBand->SetColorInterpretation(GCI_PaletteIndex);
@@ -3652,29 +4253,48 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
     poDS->TryLoadXML();
 
-    if (poDS->m_sInst.empty() || poDS->m_sProductType.empty()) {
+    if (poDS->m_sInst.empty() || poDS->m_sProductType.empty())
+    {
         std::string sInst = "LSAR";
-        std::string sType = poDS->ReadHDF5StringDataset(poDS->hHDF5, "/science/LSAR/identification/productType");
-        if (sType.empty()) {
+        std::string sType = poDS->ReadHDF5StringDataset(
+            poDS->hHDF5, "/science/LSAR/identification/productType");
+        if (sType.empty())
+        {
             sInst = "SSAR";
-            sType = poDS->ReadHDF5StringDataset(poDS->hHDF5, "/science/SSAR/identification/productType");
+            sType = poDS->ReadHDF5StringDataset(
+                poDS->hHDF5, "/science/SSAR/identification/productType");
         }
-        if (!sType.empty()) {
-            poDS->m_sInst = sInst; poDS->m_sProductType = sType;
+        if (!sType.empty())
+        {
+            poDS->m_sInst = sInst;
+            poDS->m_sProductType = sType;
         }
     }
 
-    if (!poDS->m_sInst.empty() && !poDS->m_sProductType.empty()) {
+    if (!poDS->m_sInst.empty() && !poDS->m_sProductType.empty())
+    {
         poDS->InitializeMetadataMap();
-        const char* pszMetaOption = poOpenInfo->papszOpenOptions ? CSLFetchNameValue(poOpenInfo->papszOpenOptions, "METADATA") : nullptr;
-        if (pszMetaOption) {
-            if (EQUAL(pszMetaOption, "ALL")) {
-                for (auto const& [key, val] : poDS->m_oMetadataMap) poDS->LoadMetadataDomain(key);
-            } else {
-                char **papszTokens = CSLTokenizeString2(pszMetaOption, ",", CSLT_STRIPLEADSPACES | CSLT_STRIPENDSPACES);
-                for (int i = 0; papszTokens && papszTokens[i] != nullptr; i++) {
+        const char *pszMetaOption =
+            poOpenInfo->papszOpenOptions
+                ? CSLFetchNameValue(poOpenInfo->papszOpenOptions, "METADATA")
+                : nullptr;
+        if (pszMetaOption)
+        {
+            if (EQUAL(pszMetaOption, "ALL"))
+            {
+                for (auto const &[key, val] : poDS->m_oMetadataMap)
+                    poDS->LoadMetadataDomain(key);
+            }
+            else
+            {
+                char **papszTokens = CSLTokenizeString2(
+                    pszMetaOption, ",",
+                    CSLT_STRIPLEADSPACES | CSLT_STRIPENDSPACES);
+                for (int i = 0; papszTokens && papszTokens[i] != nullptr; i++)
+                {
                     std::string sToken = papszTokens[i];
-                    for (auto & c: sToken) c = toupper(c);
+                    for (auto &c : sToken)
+                        c = toupper(c);
                     poDS->LoadMetadataDomain(sToken);
                 }
                 CSLDestroy(papszTokens);
@@ -3684,6 +4304,7 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 
     return poDS;
 }
+
 /************************************************************************/
 /*                                GetGeoTransform()                     */
 /* Read geotransform parameters from the HDF5 file (as attributes)      */
@@ -3691,7 +4312,8 @@ GDALDataset *NisarDataset::Open(GDALOpenInfo *poOpenInfo)
 /* If no geotransform is found, return CE_None and set the transform to */
 /* an identity transform.                                               */
 /************************************************************************/
-#if GDAL_VERSION_MAJOR > 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
+#if GDAL_VERSION_MAJOR > 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
 CPLErr NisarDataset::GetGeoTransform(GDALGeoTransform &oGT) const
 {
 #else
@@ -3700,50 +4322,64 @@ CPLErr NisarDataset::GetGeoTransform(double *padfTransform)
     // Legacy Signature: create an temporary object to hold the result
     GDALGeoTransform oGT;
     // Initialize identity
-    oGT[0] = 0.0; oGT[1] = 1.0; oGT[2] = 0.0;
-    oGT[3] = 0.0; oGT[4] = 0.0; oGT[5] = 1.0;
+    oGT[0] = 0.0;
+    oGT[1] = 1.0;
+    oGT[2] = 0.0;
+    oGT[3] = 0.0;
+    oGT[4] = 0.0;
+    oGT[5] = 1.0;
 #endif
 
     // Check PAM (Persistent Aux Metadata) - Highest Priority
-    // We must handle the parent call differently because the parent signature 
+    // We must handle the parent call differently because the parent signature
     // also changes between versions.
-#if GDAL_VERSION_MAJOR > 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
-    if (GDALPamDataset::GetGeoTransform(oGT) == CE_None) return CE_None;
+#if GDAL_VERSION_MAJOR > 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR >= 12)
+    if (GDALPamDataset::GetGeoTransform(oGT) == CE_None)
+        return CE_None;
 #else
-    if (GDALPamDataset::GetGeoTransform(padfTransform) == CE_None) return CE_None;
+    if (GDALPamDataset::GetGeoTransform(padfTransform) == CE_None)
+        return CE_None;
 #endif
 
     // Check Internal Cache
     {
         std::lock_guard<std::mutex> lock(m_GeoTransformMutex);
-        if (m_bGotGeoTransform) {
+        if (m_bGotGeoTransform)
+        {
             memcpy(oGT.data(), m_adfGeoTransform, sizeof(double) * 6);
-            // LEGACY ADAPTER WRITE-BACK
-            #if GDAL_VERSION_MAJOR < 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
+// LEGACY ADAPTER WRITE-BACK
+#if GDAL_VERSION_MAJOR < 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
             if (padfTransform)
                 memcpy(padfTransform, oGT.data(), sizeof(double) * 6);
-            #endif
+#endif
             return CE_None;
         }
     }
 
     // Early Exit for Non-Grid Data
     // If we have GCPs (Level 1 / Swaths), we should not return a GeoTransform.
-    if (const_cast<NisarDataset *>(this)->GetGCPCount() > 0) return CE_Failure;
-    if (hDataset < 0) return CE_Failure;
+    if (const_cast<NisarDataset *>(this)->GetGCPCount() > 0)
+        return CE_Failure;
+    if (hDataset < 0)
+        return CE_Failure;
 
     CPLDebug("NISAR_DRIVER", "GetGeoTransform: Cache miss. Calculating...");
 
     // Try reading explicit 'GeoTransform' attribute (Generic Fallback)
-    if (ReadGeoTransformAttribute(this->hDataset, "GeoTransform", oGT) == CE_None) {
+    if (ReadGeoTransformAttribute(this->hDataset, "GeoTransform", oGT) ==
+        CE_None)
+    {
         std::lock_guard<std::mutex> lock(m_GeoTransformMutex);
         m_bGotGeoTransform = true;
         memcpy(m_adfGeoTransform, oGT.data(), sizeof(double) * 6);
-        // LEGACY ADAPTER WRITE-BACK
-        #if GDAL_VERSION_MAJOR < 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
+// LEGACY ADAPTER WRITE-BACK
+#if GDAL_VERSION_MAJOR < 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
         if (padfTransform)
             memcpy(padfTransform, oGT.data(), sizeof(double) * 6);
-        #endif
+#endif
         return CE_None;
     }
 
@@ -3756,60 +4392,73 @@ CPLErr NisarDataset::GetGeoTransform(double *padfTransform)
     // Calibration Grids (Noise, etc.)
     //    Path: .../metadata/calibrationInformation/frequencyA/noiseEquivalentBackscatter/HH
     //    Coords: .../metadata/calibrationInformation/frequencyA/noiseEquivalentBackscatter/xCoordinates
-    
+
     // Only attempt this for Level 2 products (GCOV, GUNW) which use defined grids
     // or Level 3 products (SME2)
     if (m_bIsLevel2 || m_bIsLevel3)
     {
         std::string sCurrentPath = get_hdf5_object_name(this->hDataset);
-        
+
         // Safety Check: Only scan for coordinates if we are in a known grid-like hierarchy
-        bool bIsStandardGrid = (sCurrentPath.find("/grids/") != std::string::npos);
-        bool bIsCalibrationGrid = (sCurrentPath.find("/calibrationInformation/") != std::string::npos);
-        bool bIsRadarGrid       = (sCurrentPath.find("/radarGrid/") != std::string::npos);
+        bool bIsStandardGrid =
+            (sCurrentPath.find("/grids/") != std::string::npos);
+        bool bIsCalibrationGrid =
+            (sCurrentPath.find("/calibrationInformation/") !=
+             std::string::npos);
+        bool bIsRadarGrid =
+            (sCurrentPath.find("/radarGrid/") != std::string::npos);
 
         if (bIsStandardGrid || bIsCalibrationGrid || bIsRadarGrid)
         {
             std::string sCoordsRoot;
             std::string sSearchPath = sCurrentPath;
 
-            // 
+            //
             // We strip one path component at a time to find the 'folder' containing xCoordinates
             while (sSearchPath.length() > 1)
             {
                 // Strip the last component (e.g., remove "/HH")
                 size_t nLastSlash = sSearchPath.find_last_of('/');
-                if (nLastSlash == std::string::npos || nLastSlash == 0) break;
+                if (nLastSlash == std::string::npos || nLastSlash == 0)
+                    break;
 
-                sSearchPath = sSearchPath.substr(0, nLastSlash); 
+                sSearchPath = sSearchPath.substr(0, nLastSlash);
 
                 // Check for sibling coordinates
                 std::string sTestX = sSearchPath + "/xCoordinates";
-                
-                // Fast existence check
-                H5E_auto2_t old_func; void *old_client_data;
-                H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
-                H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr); // Suppress errors
-                htri_t exists = H5Lexists(this->hHDF5, sTestX.c_str(), H5P_DEFAULT);
-                H5Eset_auto2(H5E_DEFAULT, old_func, old_client_data); // Restore errors
 
-                if (exists > 0) {
+                // Fast existence check
+                H5E_auto2_t old_func;
+                void *old_client_data;
+                H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
+                H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);  // Suppress errors
+                htri_t exists =
+                    H5Lexists(this->hHDF5, sTestX.c_str(), H5P_DEFAULT);
+                H5Eset_auto2(H5E_DEFAULT, old_func,
+                             old_client_data);  // Restore errors
+
+                if (exists > 0)
+                {
                     sCoordsRoot = sSearchPath;
-                    CPLDebug("NISAR_DRIVER", "GetGeoTransform: Found coordinate arrays at: %s", sCoordsRoot.c_str());
+                    CPLDebug("NISAR_DRIVER",
+                             "GetGeoTransform: Found coordinate arrays at: %s",
+                             sCoordsRoot.c_str());
                     break;
                 }
             }
 
-            if (!sCoordsRoot.empty()) 
+            if (!sCoordsRoot.empty())
             {
                 // Open and Read Coordinates
                 std::string sXCoordsPath = sCoordsRoot + "/xCoordinates";
                 std::string sYCoordsPath = sCoordsRoot + "/yCoordinates";
 
-                hid_t hX = H5Dopen2(this->hHDF5, sXCoordsPath.c_str(), H5P_DEFAULT);
-                hid_t hY = H5Dopen2(this->hHDF5, sYCoordsPath.c_str(), H5P_DEFAULT);
+                hid_t hX =
+                    H5Dopen2(this->hHDF5, sXCoordsPath.c_str(), H5P_DEFAULT);
+                hid_t hY =
+                    H5Dopen2(this->hHDF5, sYCoordsPath.c_str(), H5P_DEFAULT);
 
-                if (hX >= 0 && hY >= 0) 
+                if (hX >= 0 && hY >= 0)
                 {
                     // Get Dimensions
                     hsize_t dimsX[1] = {0}, dimsY[1] = {0};
@@ -3822,86 +4471,106 @@ CPLErr NisarDataset::GetGeoTransform(double *padfTransform)
                     H5Sclose(hSpaceY);
 
                     // Proceed only if we have valid arrays (>= 2 points needed for resolution)
-                    if (dimsX[0] >= 2 && dimsY[0] >= 2) 
+                    if (dimsX[0] >= 2 && dimsY[0] >= 2)
                     {
                         // Helper Lambda to read scalar double at index
-                        auto ReadVal = [](hid_t hD, hsize_t idx) -> double {
+                        auto ReadVal = [](hid_t hD, hsize_t idx) -> double
+                        {
                             double val = 0.0;
                             hsize_t count[1] = {1};
                             hsize_t start[1] = {idx};
                             hid_t hMem = H5Screate_simple(1, count, nullptr);
                             hid_t hFile = H5Dget_space(hD);
-                            H5Sselect_hyperslab(hFile, H5S_SELECT_SET, start, nullptr, count, nullptr);
-                            if (H5Dread(hD, H5T_NATIVE_DOUBLE, hMem, hFile, H5P_DEFAULT, &val) < 0) val = 0.0;
-                            H5Sclose(hFile); H5Sclose(hMem);
+                            H5Sselect_hyperslab(hFile, H5S_SELECT_SET, start,
+                                                nullptr, count, nullptr);
+                            if (H5Dread(hD, H5T_NATIVE_DOUBLE, hMem, hFile,
+                                        H5P_DEFAULT, &val) < 0)
+                                val = 0.0;
+                            H5Sclose(hFile);
+                            H5Sclose(hMem);
                             return val;
                         };
 
                         double dfXStart = ReadVal(hX, 0);
-                        double dfXEnd   = ReadVal(hX, dimsX[0] - 1);
+                        double dfXEnd = ReadVal(hX, dimsX[0] - 1);
                         double dfYStart = ReadVal(hY, 0);
-                        double dfYEnd   = ReadVal(hY, dimsY[0] - 1);
+                        double dfYEnd = ReadVal(hY, dimsY[0] - 1);
 
                         // Calculate GeoTransform
                         // Calculate Pixel Size (Resolution)
                         // Note: We use the array size (dims - 1) for the span.
-                        double resX = (dfXEnd - dfXStart) / static_cast<double>(dimsX[0] - 1);
-                        double resY = (dfYEnd - dfYStart) / static_cast<double>(dimsY[0] - 1);
+                        double resX = (dfXEnd - dfXStart) /
+                                      static_cast<double>(dimsX[0] - 1);
+                        double resY = (dfYEnd - dfYStart) /
+                                      static_cast<double>(dimsY[0] - 1);
 
                         // Calculate Top-Left Corner (Origin)
-                        // NISAR coordinates represent Pixel Centers. 
+                        // NISAR coordinates represent Pixel Centers.
                         // GDAL GeoTransform[0],[3] represents Top-Left Corner.
                         // We must shift by half a pixel.
                         double dfULX = dfXStart - (0.5 * resX);
                         double dfULY = dfYStart - (0.5 * resY);
 
                         double adfCalcGT[6];
-                        adfCalcGT[0] = dfULX;       // Top-Left X
-                        adfCalcGT[1] = resX;        // W-E Resolution
-                        adfCalcGT[2] = 0.0;         // Rotation (0)
-                        adfCalcGT[3] = dfULY;       // Top-Left Y
-                        adfCalcGT[4] = 0.0;         // Rotation (0)
-                        adfCalcGT[5] = resY;        // N-S Resolution
-
+                        adfCalcGT[0] = dfULX;  // Top-Left X
+                        adfCalcGT[1] = resX;   // W-E Resolution
+                        adfCalcGT[2] = 0.0;    // Rotation (0)
+                        adfCalcGT[3] = dfULY;  // Top-Left Y
+                        adfCalcGT[4] = 0.0;    // Rotation (0)
+                        adfCalcGT[5] = resY;   // N-S Resolution
 
                         // Clean up HDF5 handles
-                        H5Dclose(hX); 
+                        H5Dclose(hX);
                         H5Dclose(hY);
 
                         // Cache and Return
                         {
-                            std::lock_guard<std::mutex> lock(m_GeoTransformMutex);
+                            std::lock_guard<std::mutex> lock(
+                                m_GeoTransformMutex);
                             m_bGotGeoTransform = true;
-                            memcpy(m_adfGeoTransform, adfCalcGT, sizeof(double) * 6);
-                            memcpy(oGT.data(), m_adfGeoTransform, sizeof(double) * 6);
+                            memcpy(m_adfGeoTransform, adfCalcGT,
+                                   sizeof(double) * 6);
+                            memcpy(oGT.data(), m_adfGeoTransform,
+                                   sizeof(double) * 6);
                         }
 
-                        CPLDebug("NISAR_DRIVER", "GetGeoTransform: Derived from coordinates. Origin=(%.2f, %.2f) Res=(%.6f, %.6f)",
-                                 adfCalcGT[0], adfCalcGT[3], adfCalcGT[1], adfCalcGT[5]);
+                        CPLDebug("NISAR_DRIVER",
+                                 "GetGeoTransform: Derived from coordinates. "
+                                 "Origin=(%.2f, %.2f) Res=(%.6f, %.6f)",
+                                 adfCalcGT[0], adfCalcGT[3], adfCalcGT[1],
+                                 adfCalcGT[5]);
 
-                        // LEGACY ADAPTER WRITE-BACK
-                        #if GDAL_VERSION_MAJOR < 3 || (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
+// LEGACY ADAPTER WRITE-BACK
+#if GDAL_VERSION_MAJOR < 3 ||                                                  \
+    (GDAL_VERSION_MAJOR == 3 && GDAL_VERSION_MINOR < 12)
                         if (padfTransform)
-                           memcpy(padfTransform, oGT.data(), sizeof(double) * 6);
-                        #endif
+                            memcpy(padfTransform, oGT.data(),
+                                   sizeof(double) * 6);
+#endif
 
                         return CE_None;
                     }
                 }
-                
+
                 // Cleanup if we failed inside the block
-                if (hX >= 0) H5Dclose(hX);
-                if (hY >= 0) H5Dclose(hY);
+                if (hX >= 0)
+                    H5Dclose(hX);
+                if (hY >= 0)
+                    H5Dclose(hY);
             }
         }
-        else 
+        else
         {
-            CPLDebug("NISAR_DRIVER", "GetGeoTransform: Path '%s' is not recognized as a grid or calibration layer. Skipping coordinate discovery.", sCurrentPath.c_str());
+            CPLDebug("NISAR_DRIVER",
+                     "GetGeoTransform: Path '%s' is not recognized as a grid "
+                     "or calibration layer. Skipping coordinate discovery.",
+                     sCurrentPath.c_str());
         }
     }
 
     return CE_Failure;
 }
+
 //------------------------------------------------------------------------------
 // NisarDataset::GetSpatialRef
 //------------------------------------------------------------------------------
@@ -3933,8 +4602,6 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
     // Could also check nRasterXSize == 0, but hDataset < 0 is sufficient
 
     // Initialize local variables
-    OGRSpatialReference *poSRS =
-        nullptr;                    // Pointer to the SRS object we might create
     hid_t hProjectionDataset = -1;  // Handle for the 'projection' dataset
     hid_t hAttribute =
         -1;                // Handle for attributes 'epsg_code' or 'spatial_ref'
@@ -4021,7 +4688,7 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                     poTmpSRS = nullptr;  // Prevent deletion
                     CPLDebug("NISAR_DRIVER", "Assigned SRS from EPSG...");
                     CPLDebug("NISAR_DRIVER", "Successfully imported EPSG:%d.",
-                             (int)epsg_code);
+                             static_cast<int>(epsg_code));
                     goto cleanup;  //Jump to cleanup AFTER successful assignment
                 }
                 else
@@ -4031,8 +4698,7 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                              "OGRSpatialReference.",
                              epsg_code);
                     delete poTmpSRS;
-                    poSRS = nullptr;  // Delete failed object
-                                      // Continue below to try WKT attribute
+                    // Continue below to try WKT attribute
                 }
             }
             else
@@ -4108,7 +4774,6 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                                 "Failed to import WKT from variable-length "
                                 "'spatial_ref' attribute.");
                             delete poTmpSRS;
-                            poSRS = nullptr;
                         }
                         // Free the variable length string buffer allocated by H5Aread
                         // Need the memory dataspace and type to reclaim? Docs say yes.
@@ -4138,8 +4803,8 @@ const OGRSpatialReference *NisarDataset::GetSpatialRef() const
                     size_t nWktLen = H5Tget_size(hAttrType);
                     if (nWktLen > 0)
                     {
-                        pszWKT_Alloc = (char *)VSIMalloc(
-                            nWktLen + 1);  // Use VSI for GDAL consistency
+                        pszWKT_Alloc = static_cast<char *>(VSIMalloc(
+                            nWktLen + 1));  // Use VSI for GDAL consistency
                         if (pszWKT_Alloc)
                         {
                             status =
@@ -4382,7 +5047,8 @@ cleanup:
 std::string NisarFindGroupUpward(hid_t hFile, const std::string &sPath,
                                  const std::vector<const char *> &apszNames)
 {
-    H5E_auto2_t old_func; void *old_client_data;
+    H5E_auto2_t old_func;
+    void *old_client_data;
     H5Eget_auto2(H5E_DEFAULT, &old_func, &old_client_data);
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
     std::string sGroup = sPath;
@@ -4398,7 +5064,8 @@ std::string NisarFindGroupUpward(hid_t hFile, const std::string &sPath,
         bool bAll = true;
         for (const char *pszName : apszNames)
         {
-            if (H5Lexists(hFile, (sGroup + "/" + pszName).c_str(), H5P_DEFAULT) <= 0)
+            if (H5Lexists(hFile, (sGroup + "/" + pszName).c_str(),
+                          H5P_DEFAULT) <= 0)
             {
                 bAll = false;
                 break;
@@ -4418,12 +5085,11 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
     // DECLARE ALL VARIABLES AT THE TOP
     CPLErr eErr = CE_Failure;
     hid_t hGridGroup = -1;
-    hid_t hAttr = -1;
     hid_t hScalarDset = -1;
     OGRSpatialReference *poCRS = nullptr;
     std::vector<GDAL_GCP> gcp_list;
 
-    hid_t hEpsgDset;
+    hid_t hEpsgDset = -1;
     long long epsg_code = 0;
     std::vector<double> x_coords, y_coords, slant_ranges, azimuth_times;
     std::vector<double> swath_times;
@@ -4663,10 +5329,9 @@ NisarDataset::GenerateGCPsFromGeolocationGrid(const char *pszProductGroup,
                 gcp.dfGCPPixel =
                     ((slant_ranges.at(j) - startingRange) / rangePixelSpacing) +
                     0.5;
-                gcp.dfGCPLine =
-                    ((azimuth_times.at(i) - swath_start_time) /
-                     azimuthTimeSpacing) +
-                    0.5;
+                gcp.dfGCPLine = ((azimuth_times.at(i) - swath_start_time) /
+                                 azimuthTimeSpacing) +
+                                0.5;
 
                 gcp.pszId = CPLStrdup(CPLSPrintf("%zu", gcp_list.size() + 1));
                 gcp.pszInfo = CPLStrdup("");

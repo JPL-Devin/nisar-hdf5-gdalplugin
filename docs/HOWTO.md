@@ -115,7 +115,7 @@ mamba install -c nisar-forge -c conda-forge gdal-driver-nisar=0.7.2
 
 The package also installs this guide, the repository `README.md`, the `nisar-gdal` skill document and `AGENT_GUIDE.md` (a one-page map of the driver and its documents for AI agents) to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/` for offline reference.
 
-Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `conda-build/nisar-gdal-recipe/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
+Building from source (natively on macOS, or for Linux through Docker) is documented in the repository's `BUILDING.md`. The plugin is a CMake project in `frmts/nisar/`; if you install it somewhere GDAL does not scan, point `GDAL_DRIVER_PATH` at that directory.
 
 ## 2.2 The stale-version trap
 
@@ -890,7 +890,7 @@ Four facts explain most of the performance behaviour you will observe:
 - **GDAL block size = HDF5 chunk size.** Every `IReadBlock` maps onto exactly one HDF5 chunk, so no chunk is read twice. Read windows aligned to the chunk grid are fastest. Chunk offsets are mapped lazily on first read.
 - **Mega-fetch.** When a block is missing from the cache, the driver reads a square grid of `NISAR_PREFETCH_GRID × NISAR_PREFETCH_GRID` neighbouring chunks in one contiguous range request (capped by `NISAR_MAX_MEGAFETCH_BYTES`), decompresses them in parallel (`GDAL_NUM_THREADS`) and pushes all of them into the GDAL block cache.
 - **Fixed HDF5 tuning.** Files are opened with a 4 MiB HDF5 page buffer, matching the 4 MiB paged-aggregation page NISAR granules are written with, and each dataset gets an 8 MiB / 521-slot chunk cache. Neither is configurable today.
-- **Retries.** `GDAL_HTTP_MAX_RETRY` is set to `5` by the driver if you have not set it, so transient S3 errors do not fail the read.
+- **Retries.** Set `GDAL_HTTP_MAX_RETRY` (e.g. `5`) so transient S3 errors do not fail the read; the driver does not change it.
 
 ## 11.2 Environment variables
 
@@ -904,7 +904,7 @@ These are GDAL configuration options: set them as environment variables, with `-
 | `NISAR_EXPORT_ZARR` | `NO` | When `YES`, writes a Kerchunk-style JSON sidecar under `/tmp/` describing the HDF5 chunk map of the opened raster, for Zarr / xarray tooling. Debug and interoperability only. |
 | `GDAL_NUM_THREADS` | GDAL default | Threads used to decompress chunks in parallel. `ALL_CPUS` is reasonable. |
 | `GDAL_CACHEMAX` | GDAL default | GDAL block cache size in MB. Raise it (e.g. `2048`) when repeatedly reading large remote rasters. |
-| `GDAL_HTTP_MAX_RETRY` | `5` (set by driver) | Retries on failed HTTP range requests. |
+| `GDAL_HTTP_MAX_RETRY` | GDAL default | Retries on failed HTTP range requests; `5` is a good value for S3. |
 | `GDAL_DISABLE_READDIR_ON_OPEN` | — | `EMPTY_DIR` stops GDAL listing the containing S3 prefix on open, which is pure latency when you already know the exact key. |
 | `GDAL_PAM_ENABLED` | — | `NO` stops GDAL writing `.aux.xml` sidecars next to local granules, which is harmless but clutters directories and fails on read-only media. |
 
@@ -969,7 +969,7 @@ Read in chunk-aligned windows rather than calling `ReadAsArray()` on a whole rem
 | `gdalinfo --formats` does not list `NISAR` | The plugin is not on GDAL's plugin path. Check that `gdal-driver-nisar` is installed in the *active* environment and that `$CONDA_PREFIX/lib/gdalplugins/gdal_NISAR.*` exists. If GDAL comes from outside conda, set `GDAL_DRIVER_PATH`. |
 | `gdalinfo file.h5` opens with the `HDF5` driver instead of `NISAR` | Prefix the path with `NISAR:` (or pass `-if NISAR`). |
 | `H5Fopen failed for '...'` on a remote file | Usually credentials or region. Test the URL directly with `gdalinfo /vsis3/bucket/key.h5`, check `AWS_REGION` and `AWS_PROFILE`, unset stale `AWS_*` variables, or run `aws s3 ls s3://bucket/key.h5 --profile <profile>`. Add `--debug on` to see the HTTP requests GDAL makes. |
-| The driver silently declines and another driver (or "not recognized") appears | The file part of the connection string does not end in `.h5`, or a remote URL without the `NISAR:` prefix does not contain `NISAR`. |
+| The driver silently declines and another driver (or "not recognized") appears | A remote URL without the `NISAR:` prefix does not contain `NISAR` (prefix the path with `NISAR:`), or the file is not HDF5. |
 | `The HDF5 dataset '...' does not exist` | The path (typed or constructed from `FREQ`/`POL`) is not in this granule. List the container and copy the path; for GUNW/GOFF/RIFG/RUNW use the full path, not open options. |
 | `Invalid INST open option`, `Invalid FREQ open option`, `Invalid POL open option: '...'` | Check `INST` (`LSAR`/`SSAR`), `FREQ` (`A`/`B`) and `POL` against the granule's `listOfPolarizations` / `listOfCovarianceTerms`. |
 | `DEM_FILE open option is REQUIRED when QUANTITY is specified` | Interpolation mode needs both `QUANTITY` and `DEM_FILE`. |
@@ -1000,6 +1000,7 @@ Because several releases changed output rather than only fixing crashes, knowing
 | 0.1.8 | Radar-grid metadata cubes interpreted as multi-band rasters with a correct GeoTransform; band selection with `-b`. | yes |
 | 0.1.9 | `DRIVER_VERSION` with build date reported via `gdalinfo --format NISAR`. | no |
 | 0.3.0 | Path quoting and slash handling reworked. Mask no longer applied by default. Remote reads through HDF5's ROS3 driver with AWS-style credential sourcing. | yes |
+| unreleased | Sources moved to `frmts/nisar/` with Caltech / Apache-2.0 license headers. The driver no longer sets `GDAL_HTTP_MAX_RETRY=5` when unset; set it yourself for remote reads (see [section 11.1](#111-how-the-driver-reads)). `GetMetadata` no longer leaks the `NISAR_GLOBAL`/`SUBDATASETS` lists. Code brought in line with GDAL's development practices (warning-free under GDAL's `-Weffc++`/`-Wold-style-cast` flags, overflow-safe `VSI_MALLOC2` allocations, `std::bad_alloc` handling for chunk-map, cube and decompression buffers). Fixed the ARM NEON 8-byte de-shuffle tail loop, which restarted at element 0 and overran the block buffer on aarch64. `NISAR:` connection strings no longer need the file part to contain `.h5` (in `Open()` as well as `Identify()`). A band whose chunk map cannot be allocated now makes `Open()` fail instead of returning a dataset that silently reads zeros. `GetMetadataDomainList()` no longer lists `SUBDATASETS` twice. | no |
 | 0.7.2 (current) | Packaging only: `README.md`, this guide and the `nisar-gdal` skill are installed to `$CONDA_PREFIX/share/doc/gdal-driver-nisar/`; package metadata (`doc_url`, description) updated on Anaconda.org. Driver code unchanged from 0.7.1. | no |
 | 0.7.1 | `NISAR_DUMP` metadata domain: h5dump-style listing of the HDF5 hierarchy via `gdalinfo -mdd NISAR_DUMP`, scoped by `DUMP_ROOT`, with `DUMP_MODE=HEADER\|FULL` and bounded values (`NISAR_DUMP_MAX_ELEMENTS`, `NISAR_DUMP_MAX_STRING_CHARS`); `DUMP=YES` only advertises the domain for `-mdd all` (see [section 5](#5-exploring-a-granule)). Default output and `SUBDATASETS` unchanged. | no |
 | 0.7.0 | Cube interpolation generalised: reference grid chosen from the granule's product type (GCOV, GSLC, GUNW, RSLC) honouring `INST`/`FREQ`/`POL`; cube auto-resolved from `QUANTITY` under `metadata/radarGrid` (L2/L3) or `metadata/geolocationGrid` (L1) when no HDF5 path is given; quoted file names accepted in interpolation connection strings; DEM aligned through a lazily-warped VRT instead of a grid-sized in-memory raster; resolved grid/cube reported as `NISAR_*` metadata. RSLC interpolation in radar coordinates with per-pixel terrain height solved through `coordinateX`/`coordinateY` and the DEM (`DEM_NODATA_HEIGHT`), GCPs passed through. | yes (GSLC and RSLC interpolation) |
