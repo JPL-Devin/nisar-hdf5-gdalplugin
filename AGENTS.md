@@ -104,6 +104,16 @@ Notes:
   `verify_hdf5_ros3.py` (h5py/ROS3 diagnostic, unrelated to how this driver reads remote files)
   need AWS credentials and are not part of the routine loop.
 
+Virtual Zarr / Kerchunk workflow for GCOV (`conda-build/tests/nisar_gcov_virtual_zarr.py`, no GDAL;
+needs `h5py zarr numcodecs xarray`; see `conda-build/tests/NISAR_GCOV_Virtual_Zarr.md`):
+
+```bash
+pytest -v -p no:cacheprovider conda-build/tests/test_nisar_gcov_virtual_zarr.py   # offline, synthetic HDF5
+python conda-build/tests/nisar_gcov_virtual_zarr.py generate                      # seeded real granule
+```
+
+Artifacts go to `conda-build/tests/output/` (git-ignored); never commit them.
+
 Manual checks against real data:
 
 ```bash
