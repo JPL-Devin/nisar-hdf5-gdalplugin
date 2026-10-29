@@ -20,7 +20,7 @@ Non-goals:
 ## 2. Architecture
 
 ```text
-MCP client ──stdio / streamable HTTP──> nisar-mcp-server (Python, `mcp` SDK, FastMCP)
+MCP client ──stdio / streamable HTTP──> nisar-mcp-server (Python, `mcp` SDK 2.x, MCPServer)
                                            │  osgeo.gdal (in-process)      ← default
                                            │  gdalinfo / gdal_translate    ← subprocess fallback
                                            ▼
@@ -29,8 +29,11 @@ MCP client ──stdio / streamable HTTP──> nisar-mcp-server (Python, `mcp` 
                            local .h5 │ /vsicurl/https://… │ /vsis3/bucket/…
 ```
 
-- **Language / SDK:** Python ≥ 3.11 with the official `mcp` SDK (`mcp.server.fastmcp.FastMCP`).
-  Tools are plain typed functions; the SDK derives the JSON schemas from type hints.
+- **Language / SDK:** Python ≥ 3.11 with the official `mcp` SDK **2.x** (`>=2.3,<3`), using
+  `mcp.server.mcpserver.MCPServer`, which is what FastMCP is called in 2.x. Tools are plain typed
+  functions; the SDK derives the JSON schemas from type hints. 2.x was chosen over 1.x to match
+  `earthdata-mcp-server` and `reactor_mcp_server` (section 8), and because no 1.x code exists that
+  would have to be migrated.
 - **Execution mode:** the default is the in-process `osgeo.gdal` API (`gdal.Info`,
   `gdal.Translate`, `gdal.Open` + `ReadAsArray`). It avoids a process start per call and keeps
   GDAL's block cache and `/vsicurl/` metadata cache warm across calls on the same granule.
@@ -287,7 +290,7 @@ credential code of its own: all remote I/O goes through GDAL VSI.
 |---|---|
 | Local test data | `NISAR_TEST_DATA_DIR` (also the default `NISAR_MCP_ALLOWED_ROOTS`) |
 | Direct S3 (in-region, `us-west-2`) | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, or `AWS_PROFILE` (+ `~/.aws/`), `AWS_REGION=us-west-2`; `AWS_NO_SIGN_REQUEST=YES` for public buckets; instance/role credentials work unchanged |
-| HTTPS from ASF / Earthdata | `~/.netrc` with `machine urs.earthdata.nasa.gov login … password …` (path overridable with `NETRC`), `GDAL_HTTP_NETRC=YES` (default), `GDAL_HTTP_COOKIEFILE`/`GDAL_HTTP_COOKIEJAR` pointing to a server-private cookie file; or a bearer token through `EARTHDATA_TOKEN` → the server sets `GDAL_HTTP_HEADERS="Authorization: Bearer $EARTHDATA_TOKEN"` |
+| HTTPS from ASF / Earthdata | `~/.netrc` with `machine urs.earthdata.nasa.gov login … password …` (path overridable with `NETRC`), `GDAL_HTTP_NETRC=YES` (default), `GDAL_HTTP_COOKIEFILE`/`GDAL_HTTP_COOKIEJAR` pointing to a server-private cookie file; or a bearer token through `EARTHDATA_TOKEN` → the server sets `GDAL_HTTP_HEADERS="Authorization: Bearer $EARTHDATA_TOKEN"`; or `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD` (the variables `earthdata-mcp-server` reads) → at startup the server writes a server-private netrc (mode 0600, in its cache dir) and points `GDAL_HTTP_NETRC_FILE` at it. GDAL does not read the `EARTHDATA_*` variables itself. |
 | Tuning (not secret) | `GDAL_HTTP_MAX_RETRY`, `GDAL_CACHEMAX`, `GDAL_NUM_THREADS`, `NISAR_PREFETCH_GRID`, `NISAR_MAX_MEGAFETCH_BYTES` |
 
 Example client config (Claude Desktop / Devin MCP JSON):
@@ -353,7 +356,7 @@ requirements:
     - gdal                           # osgeo.gdal Python bindings + CLI tools
     - libgdal-netcdf                 # translate(format="netCDF")
     - numpy
-    - mcp >=1.2,<2                   # official Python SDK (conda-forge)
+    - mcp >=2.3,<3                   # official Python SDK 2.x (conda-forge; brings httpx2, mcp-types, opentelemetry-api)
 test:
   imports: [nisar_mcp]
   commands:
@@ -383,7 +386,40 @@ test:
   (trimmed) and exposed as a prompt `nisar://docs/skill`. The tool descriptions therefore carry
   the same guidance on inventory-first use, `MASK` and statistics as the CLI docs.
 
-## 8. Testing
+## 8. Composing with earthdata-mcp-server
+
+[`datalayer/earthdata-mcp-server`](https://github.com/datalayer/earthdata-mcp-server) does
+discovery and download, and this server reads inside granules, so the two complement each other.
+Its tools are `search_earth_datasets`, `search_earth_datagranules` and
+`download_earth_data_granules` (`mode="manifest" | "script" | "download"`). It does CMR search
+through `earthaccess`, and it never opens a file.
+
+Workflow:
+
+1. `search_earth_datagranules(short_name=…, temporal=…, bounding_box=…)` or
+   `download_earth_data_granules(..., mode="manifest")` on the earthdata server. Each manifest item
+   carries `links` (earthaccess `data_links`, HTTPS by default).
+2. Pass the `.h5` link as `path` to `list_subdatasets` / `get_metadata` / `get_subset` /
+   `sample_at_points` / `translate` here. The data is read by range over `/vsicurl/`, with no
+   download. This replaces `list_products` for HTTPS, where ASF offers no directory listing.
+
+Integration points:
+
+- **Same SDK major.** Both servers use `mcp` 2.x. They can run as two separate MCP servers in the
+  client config, or as two toolsets on one `reactor_mcp_server` host (`/mcp?earthdata&nisar`). For
+  the latter this server would also ship a `reactor.mcp.extensions` entry point. That is optional,
+  because the stand-alone `nisar-mcp-server` entry point stays the primary interface.
+- **Shared credentials.** One env block with `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD` serves both
+  servers (section 6).
+- **Link selection.** The manifest returns at most 5 links per granule, and NISAR granules can carry
+  non-`.h5` links. The tool descriptions here say to pass the link that ends in `.h5`, and `path`
+  validation rejects anything else, which matches the driver's own `.h5` requirement. Still to be
+  checked on real NISAR manifests: whether the `.h5` link is always within the first 5.
+- **No overlap.** Its `mode="download"` (whole granules to local disk) is needed only for repeated
+  offline work. The local path it returns works here as well, provided it is under
+  `NISAR_MCP_ALLOWED_ROOTS`.
+
+## 9. Testing
 
 - Unit tests (no network): a tiny synthetic NISAR-layout HDF5 built with `h5py` in a fixture
   (as `conda-build/tests/test_dump.py` does) covers argument validation, path policy, credential
@@ -396,7 +432,7 @@ test:
 - `sample_at_points` cube mode is checked against `gdal_translate -oo QUANTITY=…` output at the
   same pixels, so it inherits the driver's interpolation tests rather than duplicating them.
 
-## 9. Open questions
+## 10. Open questions
 
 1. Default `list_products` pattern: keep `product_*.h5` or change to `NISAR_*.h5` / `*.h5`?
 2. Default execution mode: in-process (faster) or subprocess (crash-isolated)?
